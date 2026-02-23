@@ -8,10 +8,14 @@ Real-time monitoring for Pecron portable power stations (E600, E1500LFP, E2000, 
 
 - 🔋 Real-time battery percentage, voltage, temperature
 - ⚡ Input/output power monitoring (solar, AC, DC)
-- 🚨 Configurable low-battery alerts (Telegram, ntfy, or webhook)
+- 🔌 AC/DC output control, UPS toggle, screen brightness
+- 🤖 Automation rules (battery-range triggers, time schedules)
+- 🏠 Home Assistant MQTT bridge (auto-discovery)
+- 🚨 Configurable alerts (Telegram, ntfy, or webhook)
 - 📊 On-demand status reads
 - 🔄 Auto-reconnect and token refresh
 - 🌍 Multi-region support (North America, Europe, China)
+- 🔧 Multi-model support — auto-fetches your model's TSL (data schema)
 
 ## Requirements
 
@@ -29,6 +33,26 @@ python pecron_monitor.py --setup
 
 # Start monitoring
 python pecron_monitor.py
+
+# One-shot status
+python pecron_monitor.py --status
+
+# Control AC/DC
+python pecron_monitor.py --ac on
+python pecron_monitor.py --dc off
+
+# List all controls your model supports
+python pecron_monitor.py --controls
+
+# Set any control by its TSL code
+python pecron_monitor.py --control ac_switch_hm on
+python pecron_monitor.py --control machine_screen_light_as 3
+
+# Dump raw JSON (useful for debugging new models)
+python pecron_monitor.py --raw
+
+# Start with Home Assistant MQTT bridge
+python pecron_monitor.py --homeassistant
 ```
 
 ## Configuration
@@ -76,6 +100,57 @@ alerts:
     url: ""
 ```
 
+## Automation Rules
+
+Add rules to `config.yaml` to automate actions based on battery level or time:
+
+```yaml
+rules:
+  - name: "Low battery — turn off AC"
+    condition:
+      battery_below: 10
+    action:
+      set_ac: false
+    cooldown_minutes: 30
+
+  - name: "Full charge — enable AC"
+    condition:
+      battery_above: 95
+    action:
+      set_ac: true
+    cooldown_minutes: 30
+
+  - name: "No solar — turn off DC"
+    condition:
+      input_power_below: 5
+    action:
+      set_dc: false
+    cooldown_minutes: 60
+
+  - name: "Midnight shutoff"
+    condition:
+      schedule: "00:00"
+    action:
+      set_ac: false
+      set_dc: false
+    cooldown_minutes: 1440
+```
+
+## Home Assistant Integration
+
+Enable the MQTT bridge to auto-discover your Pecron as a Home Assistant device:
+
+```yaml
+homeassistant:
+  enabled: true
+  mqtt_host: "192.168.1.100"  # Your HA MQTT broker
+  mqtt_port: 1883
+  mqtt_user: "ha_user"
+  mqtt_password: "ha_pass"
+```
+
+This creates sensors (battery, voltage, temp, power in/out, remaining time) and switches (AC, DC, UPS) in HA automatically.
+
 ## Running as a Service (Raspberry Pi / Linux)
 
 ```bash
@@ -104,12 +179,11 @@ sudo systemctl start pecron-monitor
 
 ## Supported Models
 
-Any Pecron power station that works with the Pecron app, including:
-- E600LFP
-- E1500LFP
-- E2000LFP
-- E3000LFP
-- And others using the Quectel IoT platform
+Any Pecron power station that works with the Pecron app. The setup wizard auto-discovers your model. Controls and sensors are fetched dynamically from the device's TSL (Thing Specification Language), so new models work automatically.
+
+Known models: E300LFP, C300LFP Mini, E500LFP, E600LFP, E800LFP, E1000LFP, E1500LFP, E2000LFP, E2200LFP, E2400LFP, E3600, E3600LFP, E3800LFP, F1000LFP, F3000LFP, F5000LFP, WB12200.
+
+Use `--controls` to see what your specific model supports, and `--raw` to inspect the full data payload.
 
 ## License
 

@@ -11,6 +11,9 @@ Usage:
     python pecron_monitor.py --ac off       # Turn AC output off
     python pecron_monitor.py --dc on        # Turn DC output on
     python pecron_monitor.py --dc off       # Turn DC output off
+    python pecron_monitor.py --controls     # List all available controls for your model
+    python pecron_monitor.py --control ac_switch_hm on   # Set any control by code
+    python pecron_monitor.py --raw          # Dump raw JSON from device
     python pecron_monitor.py --homeassistant # Start with Home Assistant MQTT bridge
 """
 
@@ -88,6 +91,39 @@ DEFAULT_CONTROLS = {
     "machine_screen_light_as":{"id": 45, "type": "ENUM", "desc": "Screen brightness"},
 }
 
+# Common sensor field mappings — works across all known Pecron models.
+# The MQTT kv dict uses these nested keys; models may omit some.
+SENSOR_FIELDS = {
+    "battery_percent": ("host_packet_data_jdb", "host_packet_electric_percentage"),
+    "voltage": ("host_packet_data_jdb", "host_packet_voltage"),
+    "temperature": ("host_packet_data_jdb", "host_packet_temp"),
+    "charge_status": ("host_packet_data_jdb", "host_packet_status"),
+    "total_input_power": ("total_input_power",),
+    "total_output_power": ("total_output_power",),
+    "remain_time": ("remain_time",),
+    "ac_output_power": ("ac_data_output_hm", "ac_output_power"),
+    "ac_output_voltage": ("ac_data_output_hm", "ac_output_voltage"),
+    "dc_output_power": ("dc_data_output_hm", "dc_output_power"),
+    "ac_input_power": ("ac_data_input_hm", "ac_power"),
+    "dc_input_power": ("dc_data_input_hm", "dc_input_power"),
+    "ac_switch": ("ac_switch_hm",),
+    "dc_switch": ("dc_switch_hm",),
+    "ups_mode": ("ups_status_hm",),
+}
+
+
+def _get_kv(kv: dict, path: tuple, default=None):
+    """Safely navigate nested kv dict by path tuple."""
+    obj = kv
+    for key in path:
+        if isinstance(obj, dict):
+            obj = obj.get(key)
+        else:
+            return default
+        if obj is None:
+            return default
+    return obj
+
 CONFIG_PATH = Path(__file__).parent / "config.yaml"
 log = logging.getLogger("pecron")
 
@@ -161,8 +197,11 @@ def get_product_tsl(token: str, region: dict, product_key: str) -> dict:
             for prop in tsl.get("properties", []):
                 dt = prop.get("dataType", {})
                 dtype = dt.get("type", dt) if isinstance(dt, dict) else str(dt)
+                access = prop.get("subType", prop.get("accessMode", "R"))
                 controls[prop["code"]] = {
-                    "id": prop["id"], "type": dtype, "desc": prop.get("name", prop["code"]),
+                    "id": prop["id"], "type": dtype,
+                    "desc": prop.get("name", prop["code"]),
+                    "access": access,
                 }
             return controls
     except Exception as e:
@@ -430,21 +469,18 @@ class HomeAssistantBridge:
         if not self._connected:
             return
 
-        bp = kv.get("host_packet_data_jdb", {})
-        ac_out = kv.get("ac_data_output_hm", {})
-
         state = {
-            "battery_percent": int(bp.get("host_packet_electric_percentage", 0)),
-            "voltage": round(float(bp.get("host_packet_voltage", 0)), 1),
-            "temperature": int(bp.get("host_packet_temp", 0)),
-            "total_input_power": int(kv.get("total_input_power", 0)),
-            "total_output_power": int(kv.get("total_output_power", 0)),
-            "remain_minutes": int(kv.get("remain_time", 0)),
-            "ac_switch": "ON" if kv.get("ac_switch_hm") else "OFF",
-            "dc_switch": "ON" if kv.get("dc_switch_hm") else "OFF",
-            "ups_mode": "ON" if kv.get("ups_status_hm") else "OFF",
-            "ac_output_power": int(ac_out.get("ac_output_power", 0)),
-            "ac_output_voltage": int(ac_out.get("ac_output_voltage", 0)),
+            "battery_percent": int(_get_kv(kv, SENSOR_FIELDS["battery_percent"], 0)),
+            "voltage": round(float(_get_kv(kv, SENSOR_FIELDS["voltage"], 0)), 1),
+            "temperature": int(_get_kv(kv, SENSOR_FIELDS["temperature"], 0)),
+            "total_input_power": int(_get_kv(kv, SENSOR_FIELDS["total_input_power"], 0)),
+            "total_output_power": int(_get_kv(kv, SENSOR_FIELDS["total_output_power"], 0)),
+            "remain_minutes": int(_get_kv(kv, SENSOR_FIELDS["remain_time"], 0)),
+            "ac_switch": "ON" if _get_kv(kv, SENSOR_FIELDS["ac_switch"]) else "OFF",
+            "dc_switch": "ON" if _get_kv(kv, SENSOR_FIELDS["dc_switch"]) else "OFF",
+            "ups_mode": "ON" if _get_kv(kv, SENSOR_FIELDS["ups_mode"]) else "OFF",
+            "ac_output_power": int(_get_kv(kv, SENSOR_FIELDS["ac_output_power"], 0)),
+            "ac_output_voltage": int(_get_kv(kv, SENSOR_FIELDS["ac_output_voltage"], 0)),
         }
 
         self.client.publish(f"pecron/{device_key}/state", json.dumps(state), qos=1, retain=True)
@@ -531,13 +567,12 @@ class PecronMonitor:
     # --- Data processing ---
 
     def _process_data(self, device_key: str, kv: dict):
-        bp = kv.get("host_packet_data_jdb", {})
-        battery_pct = int(bp.get("host_packet_electric_percentage", -1))
-        voltage = float(bp.get("host_packet_voltage", 0))
-        temp = int(bp.get("host_packet_temp", 0))
-        total_in = int(kv.get("total_input_power", 0))
-        total_out = int(kv.get("total_output_power", 0))
-        remain = int(kv.get("remain_time", 0))
+        battery_pct = int(_get_kv(kv, SENSOR_FIELDS["battery_percent"], -1))
+        voltage = float(_get_kv(kv, SENSOR_FIELDS["voltage"], 0))
+        temp = int(_get_kv(kv, SENSOR_FIELDS["temperature"], 0))
+        total_in = int(_get_kv(kv, SENSOR_FIELDS["total_input_power"], 0))
+        total_out = int(_get_kv(kv, SENSOR_FIELDS["total_output_power"], 0))
+        remain = int(_get_kv(kv, SENSOR_FIELDS["remain_time"], 0))
 
         log.info("🔋 %s%% | %.1fV | %d°C | ⚡ In:%dW Out:%dW | ⏱ %dh%dm",
                  battery_pct, voltage, temp, total_in, total_out,
@@ -604,8 +639,8 @@ class PecronMonitor:
 
     # --- Control commands ---
 
-    def send_bool_control(self, device_key: str, control_code: str, value: bool):
-        """Send a boolean control command (e.g., ac_switch_hm, dc_switch_hm)."""
+    def send_control(self, device_key: str, control_code: str, value):
+        """Send a control command. Auto-detects type from TSL (BOOL, ENUM, INT)."""
         device = self._find_device(device_key)
         if not device:
             log.error("Device %s not found", device_key)
@@ -617,12 +652,30 @@ class PecronMonitor:
             log.error("Control %s not found for device %s", control_code, device_key)
             return False
 
+        access = ctrl.get("access", "R").upper()
+        if "W" not in access:
+            log.error("Control %s is read-only (access=%s)", control_code, access)
+            return False
+
         cid = self._channel_id(device)
         pid = self._next_packet_id()
-        pkt = build_ttlv_write_bool(pid, ctrl["id"], value)
+        ctrl_type = str(ctrl.get("type", "BOOL")).upper()
+
+        if ctrl_type == "BOOL":
+            pkt = build_ttlv_write_bool(pid, ctrl["id"], bool(value))
+        elif ctrl_type in ("ENUM", "INT", "LONG"):
+            pkt = build_ttlv_write_enum(pid, ctrl["id"], int(value))
+        else:
+            log.warning("Unknown control type '%s' for %s, trying bool", ctrl_type, control_code)
+            pkt = build_ttlv_write_bool(pid, ctrl["id"], bool(value))
+
         self.mqtt_client.publish(f"q/1/d/{cid}/bus", pkt, qos=1)
-        log.info("Sent %s=%s to %s (packet=%d)", control_code, value, device_key, pid)
+        log.info("Sent %s=%s (type=%s) to %s", control_code, value, ctrl_type, device_key)
         return True
+
+    # Convenience aliases
+    def send_bool_control(self, device_key: str, control_code: str, value: bool):
+        return self.send_control(device_key, control_code, value)
 
     def set_ac(self, device_key: str, on: bool):
         return self.send_bool_control(device_key, "ac_switch_hm", on)
@@ -804,30 +857,25 @@ class PecronMonitor:
         time.sleep(5)
 
         for dk, kv in self.latest_data.items():
-            bp = kv.get("host_packet_data_jdb", {})
-            ac_out = kv.get("ac_data_output_hm", {})
-            dc_out = kv.get("dc_data_output_hm", {})
-            ac_in = kv.get("ac_data_input_hm", {})
-            dc_in = kv.get("dc_data_input_hm", {})
-            remain = int(kv.get("remain_time", 0))
+            remain = int(_get_kv(kv, SENSOR_FIELDS["remain_time"], 0))
             packs = kv.get("charging_pack_data_jdb", [])
 
             print(f"\n{'=' * 50}")
             print(f"Device: {dk}")
             print(f"{'=' * 50}")
-            print(f"Battery:       {bp.get('host_packet_electric_percentage', '?')}%")
-            print(f"Voltage:       {float(bp.get('host_packet_voltage', 0)):.1f}V")
-            print(f"Temperature:   {bp.get('host_packet_temp', '?')}°C")
+            print(f"Battery:       {_get_kv(kv, SENSOR_FIELDS['battery_percent'], '?')}%")
+            print(f"Voltage:       {float(_get_kv(kv, SENSOR_FIELDS['voltage'], 0)):.1f}V")
+            print(f"Temperature:   {_get_kv(kv, SENSOR_FIELDS['temperature'], '?')}°C")
             print(f"Remaining:     {remain // 60}h {remain % 60}m")
-            print(f"Total Input:   {kv.get('total_input_power', 0)}W")
-            print(f"Total Output:  {kv.get('total_output_power', 0)}W")
-            print(f"AC Output:     {ac_out.get('ac_output_power', 0)}W @ {ac_out.get('ac_output_voltage', '?')}V")
-            print(f"DC Output:     {dc_out.get('dc_output_power', 0)}W")
-            print(f"AC Input:      {ac_in.get('ac_power', 0)}W")
-            print(f"DC Input:      {dc_in.get('dc_input_power', 0)}W")
-            print(f"AC Switch:     {'ON' if kv.get('ac_switch_hm') else 'OFF'}")
-            print(f"DC Switch:     {'ON' if kv.get('dc_switch_hm') else 'OFF'}")
-            print(f"UPS Mode:      {'ON' if kv.get('ups_status_hm') else 'OFF'}")
+            print(f"Total Input:   {_get_kv(kv, SENSOR_FIELDS['total_input_power'], 0)}W")
+            print(f"Total Output:  {_get_kv(kv, SENSOR_FIELDS['total_output_power'], 0)}W")
+            print(f"AC Output:     {_get_kv(kv, SENSOR_FIELDS['ac_output_power'], 0)}W @ {_get_kv(kv, SENSOR_FIELDS['ac_output_voltage'], '?')}V")
+            print(f"DC Output:     {_get_kv(kv, SENSOR_FIELDS['dc_output_power'], 0)}W")
+            print(f"AC Input:      {_get_kv(kv, SENSOR_FIELDS['ac_input_power'], 0)}W")
+            print(f"DC Input:      {_get_kv(kv, SENSOR_FIELDS['dc_input_power'], 0)}W")
+            print(f"AC Switch:     {'ON' if _get_kv(kv, SENSOR_FIELDS['ac_switch']) else 'OFF'}")
+            print(f"DC Switch:     {'ON' if _get_kv(kv, SENSOR_FIELDS['dc_switch']) else 'OFF'}")
+            print(f"UPS Mode:      {'ON' if _get_kv(kv, SENSOR_FIELDS['ups_mode']) else 'OFF'}")
 
             for i, pack in enumerate(packs):
                 if int(pack.get("charging_pack_status", 4)) != 4:
@@ -960,6 +1008,10 @@ def main():
     parser.add_argument("--ac", choices=["on", "off"], help="Turn AC output on/off")
     parser.add_argument("--dc", choices=["on", "off"], help="Turn DC output on/off")
     parser.add_argument("--homeassistant", action="store_true", help="Enable HA MQTT bridge")
+    parser.add_argument("--raw", action="store_true", help="Dump raw JSON data from device")
+    parser.add_argument("--controls", action="store_true", help="List available controls from TSL")
+    parser.add_argument("--control", nargs=2, metavar=("CODE", "VALUE"),
+                        help="Set any control: --control ac_switch_hm true")
     parser.add_argument("--config", type=str, default=str(CONFIG_PATH), help="Config file path")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
     args = parser.parse_args()
@@ -989,6 +1041,66 @@ def main():
 
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
+
+    if args.controls:
+        # List available controls for all configured devices
+        token_data = login(config["email"], config["password"], REGIONS[config["region"]])
+        catalog = get_product_catalog(token_data["token"], REGIONS[config["region"]])
+        for d in config.get("devices", []):
+            pk, dk = d["product_key"], d["device_key"]
+            name = catalog.get(pk, d.get("name", "Unknown"))
+            tsl = get_product_tsl(token_data["token"], REGIONS[config["region"]], pk)
+            print(f"\n{name} ({dk}):")
+            if not tsl:
+                print("  (TSL not available — using defaults)")
+                tsl = DEFAULT_CONTROLS
+            for code, info in sorted(tsl.items(), key=lambda x: x[1]["id"]):
+                rw = "RW" if "W" in info.get("access", "R").upper() else "RO"
+                print(f"  id={info['id']:3d}  {rw}  {info.get('type','?'):6s}  {code}  — {info.get('desc', '')}")
+        return
+
+    if args.raw:
+        monitor = PecronMonitor(config)
+        monitor.authenticate()
+        monitor.connect_mqtt()
+        time.sleep(3)
+        monitor._request_status()
+        time.sleep(5)
+        for dk, kv in monitor.latest_data.items():
+            print(json.dumps({dk: kv}, indent=2, default=str))
+        if not monitor.latest_data:
+            print("No data received — device may be offline.")
+        monitor.mqtt_client.loop_stop()
+        monitor.mqtt_client.disconnect()
+        return
+
+    if args.control:
+        code, val = args.control
+        # Parse value
+        if val.lower() in ("true", "on", "1"):
+            parsed_val = True
+        elif val.lower() in ("false", "off", "0"):
+            parsed_val = False
+        else:
+            try:
+                parsed_val = int(val)
+            except ValueError:
+                print(f"Invalid value: {val}")
+                sys.exit(1)
+        monitor = PecronMonitor(config)
+        monitor.authenticate()
+        monitor.connect_mqtt()
+        time.sleep(3)
+        for device in monitor.devices:
+            monitor.send_control(device["device_key"], code, parsed_val)
+        time.sleep(3)
+        monitor._request_status()
+        time.sleep(5)
+        for dk, kv in monitor.latest_data.items():
+            print(f"Device {dk}: sent {code}={parsed_val}")
+        monitor.mqtt_client.loop_stop()
+        monitor.mqtt_client.disconnect()
+        return
 
     if args.ac is not None or args.dc is not None:
         monitor.one_shot_command(
