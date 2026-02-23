@@ -1,0 +1,43 @@
+# Pecron Battery Monitor
+
+> Open-source Python tool to monitor and control Pecron portable power stations from a Raspberry Pi, Linux server, or Mac — without the phone app.
+
+## What this project does
+
+This is a standalone Python application that connects to Pecron's cloud API to monitor and control Pecron portable power stations (battery generators). It replaces the need for the Pecron phone app by talking directly to the Quectel IoT cloud platform that Pecron devices use.
+
+## Key capabilities
+
+- Real-time battery monitoring (percentage, voltage, temperature, power in/out)
+- Remote control of AC output, DC output, UPS mode, screen brightness
+- Low-battery alerts via Telegram, ntfy, or webhooks
+- Automation rules (turn off AC when battery below 10%, schedule shutoffs, etc.)
+- Home Assistant MQTT integration with auto-discovery
+- Runs 24/7 on a Raspberry Pi as a systemd service
+- Supports all Pecron models that use the Pecron app (28+ models)
+- Auto-detects device model and available controls via TSL (Thing Specification Language)
+- No phone or Bluetooth required — uses WiFi cloud API
+
+## Supported devices
+
+Any Pecron power station compatible with the Pecron mobile app, including:
+E300LFP, C300LFP Mini, E500LFP, E600LFP, E800LFP, E1000LFP, E1500LFP, E2000LFP, E2200LFP, E2400LFP, E3600, E3600LFP, E3800LFP, F1000LFP, F3000LFP, F5000LFP, WB12200
+
+## Requirements
+
+- Python 3.9+
+- Pecron account (email/password)
+- Device key (MAC address from Pecron app settings)
+
+## Installation
+
+```
+git clone https://github.com/attractify-logan/pecron-monitor.git
+cd pecron-monitor
+pip install -r requirements.txt
+python pecron_monitor.py --setup
+```
+
+## Documentation
+
+Full documentation is in README.md including step-by-step installation, usage examples, alert setup, automation rules, Home Assistant integration, Raspberry Pi service setup, troubleshooting, and FAQ.

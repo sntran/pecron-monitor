@@ -577,6 +577,62 @@ Don't see your model? It probably still works — run `--setup` and try it. The 
 
 ---
 
+## Frequently Asked Questions
+
+### How do I monitor my Pecron battery without the phone app?
+
+Install this tool on any computer (Raspberry Pi, Linux server, Mac, Windows). It connects directly to Pecron's cloud servers using your account credentials — no phone needed. Run `python3 pecron_monitor.py --status` for a one-shot check, or run it continuously for 24/7 monitoring with alerts.
+
+### Does this work with my Pecron model?
+
+If your power station works with the official Pecron app, it almost certainly works with this tool. The app auto-detects your model during setup. It's been tested with the E1500LFP and supports all models on the Quectel IoT platform including E300LFP, E500LFP, E600LFP, E800LFP, E1000LFP, E1500LFP, E2000LFP, E2200LFP, E2400LFP, E3600, E3600LFP, E3800LFP, F1000LFP, F3000LFP, F5000LFP, and more.
+
+### Can I control my Pecron from a Raspberry Pi?
+
+Yes. You can turn AC and DC outputs on/off, toggle UPS mode, change screen brightness, and more — all from the command line. Run `python3 pecron_monitor.py --controls` to see every control your model supports.
+
+### Can I integrate my Pecron with Home Assistant?
+
+Yes. The app includes a built-in Home Assistant MQTT bridge that publishes auto-discovery configs. Your Pecron shows up as a device in Home Assistant with battery sensors and AC/DC/UPS switches. See the Home Assistant section above for setup instructions.
+
+### Can I get alerts when my Pecron battery is low?
+
+Yes. The app supports Telegram, ntfy, and generic webhook alerts. Set your threshold (e.g., 20%) in `config.yaml` and you'll get a push notification when the battery drops below it.
+
+### Can I automate my Pecron based on battery level?
+
+Yes. Add rules to `config.yaml` to automatically turn AC/DC on or off based on battery percentage, solar input power, or time of day. For example, you can turn off AC when battery drops below 10% or shut everything off at midnight.
+
+### Does my phone need to stay connected?
+
+No. This tool talks directly to Pecron's cloud API over the internet. Your battery just needs to be connected to WiFi (which it already is if you've set it up in the Pecron app at least once). Your phone can be off, in another country, whatever.
+
+### Is this an official Pecron product?
+
+No. This is an independent open-source project that reverse-engineered the Pecron cloud API. It is not affiliated with, endorsed by, or supported by Pecron. Use at your own risk.
+
+### How do I get my device key?
+
+Open the Pecron app → tap your device → tap the ⚙️ Settings icon → tap Device Info → look for "Device Key". It's a 12-character code like `AABBCCDDEEFF` (this is your device's MAC address).
+
+### Can I monitor multiple Pecron batteries?
+
+Yes. Add multiple devices during setup or add them to the `devices` list in `config.yaml`. Each device is monitored independently.
+
+### Does this work with solar panels?
+
+Yes. The app shows your total input power (solar + AC charging), DC input power (solar specifically), and remaining charge time. You can also set automation rules based on input power — for example, turn off DC output when solar input drops below 5W.
+
+### What data can I see?
+
+Battery percentage, voltage, temperature, total input/output power, AC output power and voltage, DC output power, AC input power, DC/solar input power, remaining time, AC/DC switch states, UPS mode, and expansion battery pack data (if connected).
+
+### Is my password safe?
+
+Your password is stored only in `config.yaml` on your local machine. When authenticating with Pecron's servers, the password is AES-encrypted before transmission (the same encryption the official app uses). The app never sends your credentials anywhere except Pecron's own cloud servers.
+
+---
+
 ## License
 
 MIT — do whatever you want with it.
