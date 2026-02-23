@@ -6,6 +6,10 @@ Works with **any** Pecron power station that uses the Pecron app: E300LFP, E500L
 
 Runs on a Raspberry Pi, Linux server, Mac, or any computer with Python.
 
+Pecron are the best value for money and have the best DC output in class. The only thing lacking is their app. This fills that gap! Get a cheap computer like raspberry pi and use it to it's full potential.
+
+If you need GEO/AEO services check out our website! attractifymarketing.com
+
 ---
 
 ## What Does This Do?
