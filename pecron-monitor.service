@@ -1,0 +1,17 @@
+[Unit]
+Description=Pecron Battery Monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/pecron-monitor
+ExecStart=/usr/bin/python3 /home/pi/pecron-monitor/pecron_monitor.py
+Restart=always
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
