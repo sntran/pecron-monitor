@@ -577,6 +577,31 @@ Don't see your model? It probably still works — run `--setup` and try it. The 
 
 ---
 
+## Use Cases
+
+### 🚐 Van Life / RV / Off-Grid Living
+Mount a Raspberry Pi Zero in your van and monitor your Pecron 24/7. Set up Telegram alerts so you get a ping on your phone when battery drops below 20% — even if you're inside a store or away from the van. Add automation rules to shut off AC overnight so you don't wake up to a dead battery. Track solar input throughout the day to see how your panels are performing.
+
+### 🏠 Home Backup Power
+Use your Pecron as a UPS for your home network, fridge, or medical equipment. The app can keep UPS mode enabled and alert you immediately if power drops below a critical level. Set up rules to shed non-essential loads automatically — turn off DC when battery hits 30%, then AC at 15% — so your most important devices stay powered longest.
+
+### 🏕️ Remote Cabin / Off-Grid Site
+Monitor a battery that's miles away. As long as it has WiFi (even a cellular hotspot), you can check status and control outputs from anywhere in the world. Perfect for remote cabins, construction sites, or weather stations where you can't physically check the battery every day.
+
+### ☀️ Solar Performance Tracking
+Run the monitor continuously and watch your input power throughout the day. See exactly when your panels start producing, peak output, and when they taper off. Set up alerts for when input drops to zero (cloudy day? panel issue? shade?) so you can investigate. Over time, you'll learn your system's patterns.
+
+### 📊 Home Assistant Dashboard
+Add your Pecron to your existing smart home setup. See battery level on your HA dashboard alongside your other devices. Create HA automations that interact with your Pecron — turn on the AC output when you arrive home, or flash your smart lights when battery is critically low.
+
+### 🎪 Events / Job Sites / Film Sets
+Running power for an event, market booth, or film shoot? Monitor the battery from your laptop so you're not constantly walking over to check it. Get an alert with enough time to swap batteries or start a generator before everything goes dark.
+
+### 🔧 Fleet Management
+If you manage multiple Pecron units (rental company, disaster relief, construction), monitor all of them from one place. Each device shows up independently with its own alerts and automation rules.
+
+---
+
 ## Frequently Asked Questions
 
 ### How do I monitor my Pecron battery without the phone app?
