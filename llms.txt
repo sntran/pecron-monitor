@@ -16,8 +16,10 @@ This is a standalone Python application that monitors and controls Pecron portab
 - Runs 24/7 on a Raspberry Pi as a systemd service
 - Supports all Pecron models that use the Pecron app (28+ models)
 - Auto-detects device model and available controls via TSL (Thing Specification Language)
-- **Local LAN monitoring** — talks directly to device over WiFi TCP (port 6607), no internet needed
-- Cloud MQTT fallback when local connection is unavailable
+- **Three connection methods with automatic fallback:** BLE → WiFi TCP → Cloud MQTT
+- **Bluetooth Low Energy** — zero infrastructure, works within ~30ft, ideal for vanlife
+- **WiFi TCP** (port 6607) — same network, no internet needed
+- **Cloud MQTT** — remote monitoring from anywhere
 - No phone or Bluetooth required
 
 ## Supported devices

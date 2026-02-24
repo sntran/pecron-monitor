@@ -1,12 +1,15 @@
 """
-LocalTransport for Pecron Monitor — TCP/6607 with AES-CBC encryption.
+Local transports for Pecron Monitor — TCP/6607 and BLE with AES-CBC encryption.
 
-Connects to Pecron device on LAN, performs WiFi handshake (random exchange + SHA-256 login),
-then sends/receives encrypted TTLV commands. Produces the same kv dict structure as MQTT
+Connects to Pecron device on LAN (WiFi TCP) or via Bluetooth Low Energy,
+performs handshake (random exchange + SHA-256 login), then sends/receives
+encrypted TTLV commands. Produces the same kv dict structure as MQTT
 so existing _process_data() works unchanged.
 
 This module is optional — pecron_monitor.py works without it (cloud-only mode).
+
 Requires: pycryptodome (pip install pycryptodome)
+Optional: bleak (pip install bleak) — for BLE transport
 """
 
 import base64
@@ -496,6 +499,356 @@ class LocalTransport:
                 log.error("Local control failed: %s", e)
                 self._connected = False
                 return False
+
+
+# ===========================================================================
+# BLE Transport
+# ===========================================================================
+
+try:
+    import asyncio
+    from bleak import BleakScanner, BleakClient
+    HAS_BLE = True
+except ImportError:
+    HAS_BLE = False
+
+BLE_CHAR_UUID = "00009c40-0000-1000-8000-00805f9b34fb"
+BLE_DEVICE_PREFIX = "QUEC_BLE"
+
+
+class BLETransport:
+    """Bluetooth Low Energy transport for Pecron devices.
+
+    Scans for nearby Pecron BLE devices, connects, and performs the same
+    TTLV handshake as TCP. No WiFi or internet required.
+
+    Requires: bleak (pip install bleak)
+    """
+
+    def __init__(self, auth_key_b64: str, device_address: str = None,
+                 device_key: str = None, scan_timeout: float = 10.0):
+        """
+        Args:
+            auth_key_b64: Base64-encoded AES key (from cloud API or config).
+            device_address: BLE MAC address (e.g. "68:24:99:E3:FF:AA").
+                           If None, scans for a device matching device_key.
+            device_key: Device key (e.g. "682499E40D61"). Used to find the
+                       device by BLE name (QUEC_BLE_XXXX) if address not given.
+            scan_timeout: How long to scan for BLE devices (seconds).
+        """
+        if not HAS_BLE:
+            raise ImportError("bleak is required for BLE transport: pip install bleak")
+
+        self.auth_key = base64.b64decode(auth_key_b64)
+        self.auth_key_b64 = auth_key_b64
+        self.device_address = device_address
+        self.device_key = device_key
+        self.scan_timeout = scan_timeout
+
+        # BLE name suffix is last 4 chars of device key
+        self._ble_suffix = device_key[-4:].upper() if device_key else None
+
+        self._client = None
+        self._iv = None
+        self._encrypted = False
+        self._packet_id = 0
+        self._lock = threading.Lock()
+        self._connected = False
+
+        # Async notification handling
+        self._rx_buf = bytearray()
+        self._rx_packets = []
+        self._rx_event = None  # Set in async context
+
+    @property
+    def connected(self) -> bool:
+        return self._connected and self._encrypted
+
+    def _next_pid(self) -> int:
+        self._packet_id = (self._packet_id + 1) % 65535
+        return self._packet_id
+
+    def _on_notify(self, sender, data: bytearray):
+        """BLE notification callback — reassemble TTLV packets from fragments."""
+        self._rx_buf.extend(data)
+        while len(self._rx_buf) >= 9:
+            # Find sync
+            idx = -1
+            for j in range(len(self._rx_buf) - 1):
+                if self._rx_buf[j] == 0xAA and self._rx_buf[j + 1] == 0xAA:
+                    idx = j
+                    break
+            if idx < 0:
+                break
+            if idx > 0:
+                del self._rx_buf[:idx]
+            us = _ttlv_byte_unstuff(bytes(self._rx_buf))
+            if len(us) < 4:
+                break
+            pkt_len = struct.unpack(">H", us[2:4])[0]
+            total = 4 + pkt_len
+            if len(us) < total:
+                break
+            pkt = us[:total]
+            rs = _ttlv_byte_stuff(pkt)
+            del self._rx_buf[:len(rs)]
+            self._rx_packets.append(pkt)
+            if self._rx_event:
+                self._rx_event.set()
+
+    async def _wait_packet(self, timeout: float = 5.0) -> bytes:
+        """Wait for a complete reassembled packet."""
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            if self._rx_packets:
+                return self._rx_packets.pop(0)
+            self._rx_event = asyncio.Event()
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            try:
+                await asyncio.wait_for(self._rx_event.wait(), min(remaining, 1.0))
+            except asyncio.TimeoutError:
+                pass
+        return self._rx_packets.pop(0) if self._rx_packets else None
+
+    async def _async_connect(self) -> bool:
+        """Async BLE connect + handshake."""
+        # Scan for the device
+        target = None
+        stop_event = asyncio.Event()
+
+        def on_detect(device, adv_data):
+            nonlocal target
+            if self.device_address and device.address == self.device_address:
+                target = device
+                stop_event.set()
+            elif self._ble_suffix and device.name and device.name.endswith(self._ble_suffix):
+                target = device
+                self.device_address = device.address
+                stop_event.set()
+
+        log.info("BLE scanning for Pecron device...")
+        scanner = BleakScanner(detection_callback=on_detect)
+        await scanner.start()
+        try:
+            await asyncio.wait_for(stop_event.wait(), self.scan_timeout)
+        except asyncio.TimeoutError:
+            await scanner.stop()
+            log.warning("BLE scan timeout — device not found")
+            return False
+
+        log.info("BLE found %s @ %s", target.name, target.address)
+
+        # Connect while scanner is still active (keeps BlueZ cache warm)
+        self._client = BleakClient(target, timeout=15.0)
+        try:
+            await self._client.connect()
+        except Exception as e:
+            log.error("BLE connect failed: %s", e)
+            await scanner.stop()
+            return False
+        await scanner.stop()
+
+        self._connected = True
+        log.info("BLE connected (MTU=%s)", self._client.mtu_size)
+
+        # Subscribe to notifications
+        self._rx_buf.clear()
+        self._rx_packets.clear()
+        await self._client.start_notify(BLE_CHAR_UUID, self._on_notify)
+        await asyncio.sleep(0.3)
+
+        # Handshake: request random
+        pkt = _ttlv_build_packet(0x7032, b"", self._next_pid())
+        await self._client.write_gatt_char(BLE_CHAR_UUID, pkt, response=True)
+
+        resp = await self._wait_packet(5.0)
+        if not resp:
+            log.error("BLE: no response to random request")
+            await self._disconnect_async()
+            return False
+
+        parsed = _ttlv_parse_packet(resp)
+        if parsed.get("cmd") != 0x7033:
+            log.error("BLE: expected 0x7033, got 0x%04x", parsed.get("cmd", 0))
+            await self._disconnect_async()
+            return False
+
+        fields = _ttlv_parse_fields(parsed["payload"])
+        random_str = None
+        for fid, ftype, fval in fields:
+            if fid == 1 and isinstance(fval, bytes):
+                random_str = fval.decode("utf-8")
+        if not random_str:
+            log.error("BLE: no random/IV in response")
+            await self._disconnect_async()
+            return False
+
+        log.debug("BLE IV: %s", random_str)
+
+        # Login
+        auth_hex = self.auth_key.hex()
+        login_hash = hashlib.sha256(
+            f"{auth_hex};{random_str}".encode("utf-8")
+        ).hexdigest()
+        login_payload = _ttlv_build_bytes_field(2, login_hash.encode("utf-8"))
+        pkt = _ttlv_build_packet(0x7034, login_payload, self._next_pid())
+        await self._client.write_gatt_char(BLE_CHAR_UUID, pkt, response=True)
+
+        resp = await self._wait_packet(5.0)
+        if not resp:
+            log.error("BLE: no login response")
+            await self._disconnect_async()
+            return False
+
+        parsed = _ttlv_parse_packet(resp)
+        if parsed.get("cmd") != 0x7035:
+            log.error("BLE login failed")
+            await self._disconnect_async()
+            return False
+
+        # Set up encryption
+        iv_bytes = random_str.encode("utf-8")
+        if len(iv_bytes) < 16:
+            iv_bytes = iv_bytes.ljust(16, b"\x00")
+        elif len(iv_bytes) > 16:
+            iv_bytes = iv_bytes[:16]
+        self._iv = iv_bytes
+        self._encrypted = True
+        log.info("BLE handshake complete — encryption active")
+        return True
+
+    async def _disconnect_async(self):
+        if self._client:
+            try:
+                await self._client.stop_notify(BLE_CHAR_UUID)
+            except Exception:
+                pass
+            try:
+                await self._client.disconnect()
+            except Exception:
+                pass
+        self._client = None
+        self._connected = False
+        self._encrypted = False
+        self._iv = None
+
+    def connect(self) -> bool:
+        """Connect to the Pecron device over BLE (synchronous wrapper)."""
+        try:
+            loop = asyncio.new_event_loop()
+            result = loop.run_until_complete(self._async_connect())
+            # Keep the loop for later use
+            self._loop = loop
+            return result
+        except Exception as e:
+            log.error("BLE connect error: %s", e)
+            return False
+
+    def disconnect(self):
+        """Disconnect from BLE device."""
+        if hasattr(self, '_loop') and self._loop:
+            try:
+                self._loop.run_until_complete(self._disconnect_async())
+                self._loop.close()
+            except Exception:
+                pass
+        self._connected = False
+        self._encrypted = False
+
+    async def _async_read_status(self) -> dict:
+        """Read status over BLE (async)."""
+        self._rx_packets.clear()
+        self._rx_buf.clear()
+
+        pkt = _ttlv_build_packet(0x0011, b"", self._next_pid())
+        await self._client.write_gatt_char(BLE_CHAR_UUID, pkt, response=True)
+
+        # BLE is slower — wait for fragments to arrive
+        await asyncio.sleep(4)
+
+        # Process packets
+        for pkt_data in self._rx_packets:
+            parsed = _ttlv_parse_packet(pkt_data)
+            payload = parsed.get("payload", b"")
+            if not payload or parsed.get("cmd") == 0x0012:
+                continue  # Skip ACK
+            try:
+                cipher = AES.new(self.auth_key, AES.MODE_CBC, self._iv)
+                decrypted = unpad(cipher.decrypt(payload), 16)
+                fields = _ttlv_parse_fields(decrypted)
+                return _fields_to_kv(fields)
+            except Exception as e:
+                log.error("BLE decrypt failed: %s", e)
+
+        self._rx_packets.clear()
+        return {}
+
+    def read_status(self) -> dict:
+        """Read device status over BLE (synchronous wrapper)."""
+        if not self.connected:
+            return {}
+        with self._lock:
+            try:
+                return self._loop.run_until_complete(self._async_read_status())
+            except Exception as e:
+                log.error("BLE read failed: %s", e)
+                self._connected = False
+                return {}
+
+    def send_control(self, data_point_id: int, value, ctrl_type: str = "BOOL") -> bool:
+        """Send a control command over BLE."""
+        if not self.connected:
+            return False
+        with self._lock:
+            try:
+                ctrl_type = ctrl_type.upper()
+                if ctrl_type == "BOOL":
+                    tag = (data_point_id << 3) | (1 if value else 0)
+                    raw_payload = struct.pack(">H", tag)
+                else:
+                    tag = (data_point_id << 3) | 2
+                    raw_payload = struct.pack(">H", tag) + bytes([int(value)])
+
+                enc_payload = AES.new(self.auth_key, AES.MODE_CBC, self._iv).encrypt(
+                    pad(raw_payload, 16)
+                )
+                pkt = _ttlv_build_packet(0x0013, enc_payload, self._next_pid())
+
+                async def _write():
+                    await self._client.write_gatt_char(BLE_CHAR_UUID, pkt, response=True)
+                    await asyncio.sleep(1)
+
+                self._loop.run_until_complete(_write())
+                return True
+            except Exception as e:
+                log.error("BLE control failed: %s", e)
+                self._connected = False
+                return False
+
+
+def scan_ble_devices(timeout: float = 10.0) -> list:
+    """Scan for nearby Pecron BLE devices. Returns list of (address, name) tuples."""
+    if not HAS_BLE:
+        return []
+    results = []
+
+    async def _scan():
+        devices = await BleakScanner.discover(timeout=timeout, return_adv=True)
+        for addr, (dev, adv) in devices.items():
+            if dev.name and dev.name.startswith(BLE_DEVICE_PREFIX):
+                results.append((dev.address, dev.name))
+        return results
+
+    try:
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(_scan())
+        loop.close()
+    except Exception as e:
+        log.debug("BLE scan failed: %s", e)
+    return results
 
 
 def get_auth_key(token: str, region: dict, pk: str, dk: str) -> str:

@@ -47,6 +47,11 @@ except ImportError:
     HAS_LOCAL = False
 
 try:
+    from local_transport import BLETransport, scan_ble_devices, HAS_BLE
+except ImportError:
+    HAS_BLE = False
+
+try:
     import paho.mqtt.client as mqtt
 except ImportError:
     print("Missing dependency: pip install paho-mqtt")
@@ -515,6 +520,7 @@ class PecronMonitor:
         self._running = False
         self.ha_bridge = None
         self.local_transports = {}  # device_key → LocalTransport
+        self.ble_transports = {}   # device_key → BLETransport
 
         # Automation rules
         self.rules = config.get("rules", [])
@@ -554,6 +560,36 @@ class PecronMonitor:
                     log.info("Local transport configured for %s @ %s", dk, lan_ip)
                 except Exception as e:
                     log.warning("Failed to set up local transport for %s: %s", dk, e)
+
+        # Set up BLE transports
+        if HAS_BLE:
+            for device in self.devices:
+                dk = device["device_key"]
+                cfg = configured.get(dk, {})
+                ble_addr = cfg.get("ble_address")
+                ble_enabled = cfg.get("ble", False)
+                if not ble_addr and not ble_enabled:
+                    continue
+                try:
+                    auth_key = cfg.get("auth_key")
+                    if not auth_key and dk not in self.local_transports:
+                        log.info("Fetching auth key for %s (BLE)...", dk)
+                        auth_key = get_auth_key(
+                            self.token_data["token"], self.region,
+                            device["product_key"], dk
+                        )
+                    elif not auth_key:
+                        # Reuse from TCP transport config
+                        auth_key = cfg.get("auth_key", self.local_transports[dk].auth_key_b64
+                                           if dk in self.local_transports else None)
+                    if auth_key:
+                        self.ble_transports[dk] = BLETransport(
+                            auth_key, device_address=ble_addr, device_key=dk
+                        )
+                        log.info("BLE transport configured for %s%s", dk,
+                                 f" @ {ble_addr}" if ble_addr else " (will scan)")
+                except Exception as e:
+                    log.warning("Failed to set up BLE transport for %s: %s", dk, e)
 
     def _connect_local(self, device_key: str) -> bool:
         """Try to connect local transport for a device."""
@@ -710,16 +746,25 @@ class PecronMonitor:
             log.warning("Unknown control type '%s' for %s, trying bool", ctrl_type, control_code)
             pkt = build_ttlv_write_bool(pid, ctrl["id"], bool(value))
 
-        # Try local transport first
+        # Try BLE first
+        ble = self.ble_transports.get(device_key)
+        if ble and ble.connected:
+            try:
+                if ble.send_control(ctrl["id"], value, ctrl_type):
+                    log.info("Sent %s=%s (type=%s) to %s via BLE", control_code, value, ctrl_type, device_key)
+                    return True
+            except Exception as e:
+                log.warning("BLE control failed: %s", e)
+
+        # Try TCP/WiFi local transport
         lt = self.local_transports.get(device_key)
         if lt and lt.connected:
             try:
-                result = lt.send_control(ctrl["id"], value, ctrl_type)
-                if result:
-                    log.info("Sent %s=%s (type=%s) to %s via LOCAL", control_code, value, ctrl_type, device_key)
+                if lt.send_control(ctrl["id"], value, ctrl_type):
+                    log.info("Sent %s=%s (type=%s) to %s via TCP", control_code, value, ctrl_type, device_key)
                     return True
             except Exception as e:
-                log.warning("Local control failed: %s — falling back to cloud", e)
+                log.warning("TCP control failed: %s", e)
 
         # Fall back to cloud MQTT
         self.mqtt_client.publish(f"q/1/d/{cid}/bus", pkt, qos=1)
@@ -799,7 +844,28 @@ class PecronMonitor:
         for device in self.devices:
             dk = device["device_key"]
 
-            # Try local transport first
+            # Priority: BLE → TCP/WiFi → Cloud MQTT
+
+            # Try BLE first (no infrastructure needed)
+            ble = self.ble_transports.get(dk)
+            if ble:
+                if not ble.connected:
+                    try:
+                        ble.connect()
+                    except Exception as e:
+                        log.debug("BLE connect failed for %s: %s", dk, e)
+                if ble.connected:
+                    try:
+                        kv = ble.read_status()
+                        if kv:
+                            log.debug("Got BLE data for %s", dk)
+                            self.latest_data[dk] = kv
+                            self._process_data(dk, kv)
+                            continue
+                    except Exception as e:
+                        log.warning("BLE read failed for %s: %s", dk, e)
+
+            # Try TCP/WiFi local transport
             lt = self.local_transports.get(dk)
             if lt:
                 if not lt.connected:
@@ -808,12 +874,12 @@ class PecronMonitor:
                     try:
                         kv = lt.read_status()
                         if kv:
-                            log.debug("Got local data for %s", dk)
+                            log.debug("Got local TCP data for %s", dk)
                             self.latest_data[dk] = kv
                             self._process_data(dk, kv)
-                            continue  # Skip MQTT for this device
+                            continue
                     except Exception as e:
-                        log.warning("Local read failed for %s: %s — falling back to cloud", dk, e)
+                        log.warning("Local TCP read failed for %s: %s", dk, e)
 
             # Fall back to cloud MQTT
             if self.mqtt_client:
@@ -1095,14 +1161,36 @@ def setup_wizard():
     if not devices:
         print("⚠️  No devices added. You can add them manually to config.yaml later.")
 
-    # --- LAN Discovery (optional) ---
-    if HAS_LOCAL and devices:
-        print("\n--- Local LAN Monitoring (optional) ---")
-        print("If your device is on the same network, local monitoring works")
-        print("without internet (great for vanlife, off-grid, etc.)\n")
-        do_lan = input("Scan for devices on LAN? [Y/n]: ").strip().lower() != "n"
-        if do_lan:
-            _setup_lan_discovery(devices, token_data["token"], REGIONS[region])
+    # --- Local / BLE Discovery (optional) ---
+    if (HAS_LOCAL or HAS_BLE) and devices:
+        print("\n--- Local Monitoring (optional) ---")
+        print("Monitor your Pecron without internet using WiFi TCP or Bluetooth.\n")
+        print("  WiFi TCP — device and computer on same network (faster)")
+        print("  Bluetooth — no network needed, ~30ft range (great for vanlife)\n")
+
+        if HAS_LOCAL:
+            do_lan = input("Scan for devices on WiFi LAN? [Y/n]: ").strip().lower() != "n"
+            if do_lan:
+                _setup_lan_discovery(devices, token_data["token"], REGIONS[region])
+
+        if HAS_BLE:
+            do_ble = input("Scan for devices via Bluetooth? [Y/n]: ").strip().lower() != "n"
+            if do_ble:
+                print("  Scanning for Pecron BLE devices...")
+                found = scan_ble_devices(timeout=10.0)
+                if found:
+                    for addr, name in found:
+                        print(f"  Found: {name} @ {addr}")
+                        # Match to configured device by suffix
+                        suffix = name.split("_")[-1] if "_" in name else ""
+                        for d in devices:
+                            if d["device_key"].upper().endswith(suffix):
+                                d["ble_address"] = addr
+                                d["ble"] = True
+                                print(f"    → Matched to {d.get('name', d['device_key'])}")
+                else:
+                    print("  No Pecron BLE devices found nearby.")
+                    print("  Make sure your Pecron is powered on and Bluetooth is enabled.")
 
     poll = input("\nPoll interval in seconds [60]: ").strip() or "60"
     threshold = input("Low battery alert threshold % [20]: ").strip() or "20"

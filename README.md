@@ -25,40 +25,59 @@ That means you can:
 ---
 
 
-## Local LAN Monitoring (No Internet Required)
+## Local Monitoring (No Internet Required)
 
-If your Pecron and computer are on the same WiFi network, the monitor can talk directly to the device over TCP — no cloud, no internet, no Pecron servers involved.
+The monitor supports **three connection methods** that automatically fall back to each other:
 
-This is ideal for:
-- **Vanlife / RV** — monitor your battery on the road without cell service
-- **Off-grid setups** — solar cabin, remote workshop, etc.
-- **Reliability** — works even if Pecron's cloud goes down
+| Method | What You Need | Range | Speed | Best For |
+|--------|--------------|-------|-------|----------|
+| **Bluetooth (BLE)** | Nothing — just proximity | ~30 ft | Slower | Vanlife, no WiFi at all |
+| **WiFi TCP** | Same WiFi network | Whole network | Fast | Home, workshop, RV with router |
+| **Cloud MQTT** | Internet connection | Anywhere | Fast | Remote monitoring |
 
-### How It Works
+**Priority order:** BLE → WiFi TCP → Cloud MQTT. The monitor tries each in order and uses the first one that works.
 
-1. Run `python pecron_monitor.py --setup` and answer "Yes" when asked to scan for LAN devices
-2. The setup wizard scans your network for Pecron devices (port 6607)
-3. It fetches a one-time encryption key from the cloud (cached locally)
-4. Done! The monitor tries local first, falls back to cloud automatically
+### Quick Setup
 
-### Manual LAN Setup
+Run `python pecron_monitor.py --setup` and the wizard will:
+1. Scan your WiFi network for Pecron devices (TCP port 6607)
+2. Scan Bluetooth for nearby Pecron devices
+3. Fetch a one-time encryption key from the cloud (cached locally forever)
 
-Add `lan_ip` and optionally `auth_key` to your device in `config.yaml`:
+After initial setup, everything works offline.
+
+### Manual Configuration
+
+Add any combination of `lan_ip`, `ble_address`, or `ble: true` to your device in `config.yaml`:
 
 ```yaml
 devices:
   - product_key: "p11u2b"
     device_key: "AABBCCDDEEFF"
     name: "E1500LFP"
-    lan_ip: "192.168.1.100"       # Your device's IP on the local network
-    auth_key: "base64keyhere=="   # Optional — auto-fetched from cloud if missing
+    lan_ip: "192.168.1.100"           # WiFi TCP — device's local IP
+    ble_address: "68:24:99:E3:FF:AA"  # Bluetooth — device's BLE MAC address
+    ble: true                          # Or just 'true' to auto-scan by device key
+    auth_key: "base64keyhere=="        # Optional — auto-fetched from cloud if missing
 ```
 
-The `auth_key` is fetched automatically from the cloud on first run (requires internet once). After that, it's cached and everything works offline.
+You only need `auth_key` once — it's fetched from the cloud on first run and cached forever. After that, WiFi TCP and Bluetooth work with zero internet.
 
-### Finding Your Device's IP
+### Bluetooth Setup
 
-Your Pecron device listens on TCP port 6607 when connected to WiFi. To find it:
+BLE requires the `bleak` Python library:
+
+```bash
+pip install bleak
+```
+
+Your computer needs a Bluetooth adapter (most laptops and Raspberry Pi 3/4/5 have one built in). Desktop PCs may need a USB BLE dongle (~$10).
+
+Pecron devices advertise as `QUEC_BLE_XXXX` where `XXXX` matches the last 4 characters of your device key. The setup wizard finds this automatically.
+
+### Finding Your Device's WiFi IP
+
+Your Pecron listens on TCP port 6607 when connected to WiFi. To find it:
 - Check your router's DHCP client list for a device with MAC starting with `68:24:99`
 - Or run: `nmap -p 6607 192.168.1.0/24` (replace with your subnet)
 
