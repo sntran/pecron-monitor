@@ -2,7 +2,20 @@
 
 Real-time monitoring and control for Pecron portable power stations — no phone required.
 
-**Works locally over WiFi (no internet needed) with cloud fallback.** Perfect for vanlife, off-grid, and anywhere you want monitoring without depending on Pecron's servers.
+**Three ways to connect — Bluetooth, WiFi, or Cloud — with automatic fallback.** Perfect for vanlife, off-grid, and anywhere you want monitoring without depending on Pecron's servers or even a WiFi network.
+
+### 🔗 Connection Methods
+
+| | **Bluetooth (BLE)** | **WiFi (TCP)** | **Cloud (MQTT)** |
+|---|---|---|---|
+| **Internet required?** | ❌ No | ❌ No | ✅ Yes |
+| **WiFi required?** | ❌ No | ✅ Yes | ✅ Yes |
+| **Range** | ~30 ft | Whole network | Anywhere |
+| **Best for** | Vanlife, true off-grid | Home, RV with router | Remote monitoring |
+
+The monitor tries **BLE → WiFi → Cloud** automatically and uses the first one that works.
+
+> **🆕 Bluetooth (BLE) support** means you can monitor your Pecron with *zero network infrastructure* — no WiFi router, no internet, no hotspot. Just your computer and the battery within Bluetooth range. Ideal for vanlife and off-grid setups.
 
 Works with **any** Pecron power station that uses the Pecron app: E300LFP, E500LFP, E600LFP, E800LFP, E1000LFP, E1500LFP, E2000LFP, E2200LFP, E2400LFP, E3600, E3600LFP, E3800LFP, F1000LFP, F3000LFP, F5000LFP, C300LFP Mini, WB12200, and future models.
 
@@ -27,15 +40,7 @@ That means you can:
 
 ## Local Monitoring (No Internet Required)
 
-The monitor supports **three connection methods** that automatically fall back to each other:
-
-| Method | What You Need | Range | Speed | Best For |
-|--------|--------------|-------|-------|----------|
-| **Bluetooth (BLE)** | Nothing — just proximity | ~30 ft | Slower | Vanlife, no WiFi at all |
-| **WiFi TCP** | Same WiFi network | Whole network | Fast | Home, workshop, RV with router |
-| **Cloud MQTT** | Internet connection | Anywhere | Fast | Remote monitoring |
-
-**Priority order:** BLE → WiFi TCP → Cloud MQTT. The monitor tries each in order and uses the first one that works.
+The monitor supports **three connection methods** (BLE → WiFi → Cloud) that automatically fall back to each other. See the [connection table above](#-connection-methods) for details.
 
 ### Quick Setup
 
@@ -83,9 +88,9 @@ Your Pecron listens on TCP port 6607 when connected to WiFi. To find it:
 
 ---
 
-## Before You Start
+## Requirements
 
-You need **three things**:
+You need **three things** (plus one optional extra for Bluetooth):
 
 ### 1. Python 3.9 or newer
 
@@ -113,6 +118,17 @@ This is a 12-character code that identifies your specific battery. To find it:
 5. Look for **Device Key** — it looks like `AABBCCDDEEFF`
 
 Write this down or copy it. You'll need it during setup.
+
+### 4. For Bluetooth (BLE) — a Bluetooth adapter
+
+If you want to use Bluetooth monitoring (no WiFi needed):
+
+- **Raspberry Pi 3/4/5:** Built-in ✅ — nothing to buy
+- **Most laptops:** Built-in ✅ — nothing to buy
+- **Desktop PCs / Le Potato / Pi Zero W:** Need a **USB BLE dongle** (~$10 on Amazon)
+- **Software:** `pip3 install bleak` (the BLE library)
+
+> BLE is optional. If you don't have a Bluetooth adapter or don't install `bleak`, the monitor works fine over WiFi and/or cloud — no errors.
 
 ---
 
