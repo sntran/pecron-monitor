@@ -36,24 +36,31 @@ This is ideal for:
 
 ### How It Works
 
-1. Run  and answer "Yes" when asked to scan for LAN devices
+1. Run `python pecron_monitor.py --setup` and answer "Yes" when asked to scan for LAN devices
 2. The setup wizard scans your network for Pecron devices (port 6607)
 3. It fetches a one-time encryption key from the cloud (cached locally)
 4. Done! The monitor tries local first, falls back to cloud automatically
 
 ### Manual LAN Setup
 
-Add  and optionally  to your device in :
+Add `lan_ip` and optionally `auth_key` to your device in `config.yaml`:
 
+```yaml
+devices:
+  - product_key: "p11u2b"
+    device_key: "AABBCCDDEEFF"
+    name: "E1500LFP"
+    lan_ip: "192.168.1.100"       # Your device's IP on the local network
+    auth_key: "base64keyhere=="   # Optional — auto-fetched from cloud if missing
+```
 
-
-The  is fetched automatically from the cloud on first run (requires internet once). After that, it's cached and everything works offline.
+The `auth_key` is fetched automatically from the cloud on first run (requires internet once). After that, it's cached and everything works offline.
 
 ### Finding Your Device's IP
 
 Your Pecron device listens on TCP port 6607 when connected to WiFi. To find it:
-- Check your router's DHCP client list for a device with MAC starting with 
-- Or run:  (replace with your subnet)
+- Check your router's DHCP client list for a device with MAC starting with `68:24:99`
+- Or run: `nmap -p 6607 192.168.1.0/24` (replace with your subnet)
 
 ---
 

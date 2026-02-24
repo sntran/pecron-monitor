@@ -4,6 +4,9 @@ LocalTransport for Pecron Monitor — TCP/6607 with AES-CBC encryption.
 Connects to Pecron device on LAN, performs WiFi handshake (random exchange + SHA-256 login),
 then sends/receives encrypted TTLV commands. Produces the same kv dict structure as MQTT
 so existing _process_data() works unchanged.
+
+This module is optional — pecron_monitor.py works without it (cloud-only mode).
+Requires: pycryptodome (pip install pycryptodome)
 """
 
 import base64
