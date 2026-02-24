@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Pecron Battery Monitor & Controller — real-time monitoring and control
-via Quectel cloud API. Works with any Pecron power station.
+via local TCP (LAN) with cloud MQTT fallback. Works with any Pecron power station.
 
 Usage:
     python pecron_monitor.py --setup        # Interactive setup wizard
@@ -38,6 +38,13 @@ from pathlib import Path
 import yaml
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
+
+# Local TCP transport (LAN-first, cloud-fallback)
+try:
+    from local_transport import LocalTransport, get_auth_key
+    HAS_LOCAL = True
+except ImportError:
+    HAS_LOCAL = False
 
 try:
     import paho.mqtt.client as mqtt
@@ -507,6 +514,7 @@ class PecronMonitor:
         self._packet_id = 0
         self._running = False
         self.ha_bridge = None
+        self.local_transports = {}  # device_key → LocalTransport
 
         # Automation rules
         self.rules = config.get("rules", [])
@@ -523,6 +531,39 @@ class PecronMonitor:
         self.devices = resolve_devices(self.config, self.token_data["token"], self.region)
         if not self.devices:
             raise RuntimeError("No valid devices found.")
+
+        # Set up local transports for devices with LAN IPs
+        if HAS_LOCAL:
+            configured = {d.get("device_key"): d for d in self.config.get("devices", [])}
+            for device in self.devices:
+                dk = device["device_key"]
+                cfg = configured.get(dk, {})
+                lan_ip = cfg.get("lan_ip")
+                if not lan_ip:
+                    continue
+                try:
+                    auth_key = cfg.get("auth_key")
+                    if not auth_key:
+                        log.info("Fetching auth key for %s...", dk)
+                        auth_key = get_auth_key(
+                            self.token_data["token"], self.region,
+                            device["product_key"], dk
+                        )
+                        log.info("Got auth key for %s (cache it in config.yaml as auth_key)", dk)
+                    self.local_transports[dk] = LocalTransport(lan_ip, auth_key)
+                    log.info("Local transport configured for %s @ %s", dk, lan_ip)
+                except Exception as e:
+                    log.warning("Failed to set up local transport for %s: %s", dk, e)
+
+    def _connect_local(self, device_key: str) -> bool:
+        """Try to connect local transport for a device."""
+        lt = self.local_transports.get(device_key)
+        if lt and not lt.connected:
+            try:
+                return lt.connect()
+            except Exception as e:
+                log.debug("Local connect failed for %s: %s", device_key, e)
+        return lt.connected if lt else False
 
     def _channel_id(self, device: dict) -> str:
         return f"qd{device['product_key']}{device['device_key']}"
@@ -669,8 +710,20 @@ class PecronMonitor:
             log.warning("Unknown control type '%s' for %s, trying bool", ctrl_type, control_code)
             pkt = build_ttlv_write_bool(pid, ctrl["id"], bool(value))
 
+        # Try local transport first
+        lt = self.local_transports.get(device_key)
+        if lt and lt.connected:
+            try:
+                result = lt.send_control(ctrl["id"], value, ctrl_type)
+                if result:
+                    log.info("Sent %s=%s (type=%s) to %s via LOCAL", control_code, value, ctrl_type, device_key)
+                    return True
+            except Exception as e:
+                log.warning("Local control failed: %s — falling back to cloud", e)
+
+        # Fall back to cloud MQTT
         self.mqtt_client.publish(f"q/1/d/{cid}/bus", pkt, qos=1)
-        log.info("Sent %s=%s (type=%s) to %s", control_code, value, ctrl_type, device_key)
+        log.info("Sent %s=%s (type=%s) to %s via CLOUD", control_code, value, ctrl_type, device_key)
         return True
 
     # Convenience aliases
@@ -744,9 +797,29 @@ class PecronMonitor:
 
     def _request_status(self):
         for device in self.devices:
-            cid = self._channel_id(device)
-            pkt = build_ttlv_read(self._next_packet_id())
-            self.mqtt_client.publish(f"q/1/d/{cid}/bus", pkt, qos=1)
+            dk = device["device_key"]
+
+            # Try local transport first
+            lt = self.local_transports.get(dk)
+            if lt:
+                if not lt.connected:
+                    self._connect_local(dk)
+                if lt.connected:
+                    try:
+                        kv = lt.read_status()
+                        if kv:
+                            log.debug("Got local data for %s", dk)
+                            self.latest_data[dk] = kv
+                            self._process_data(dk, kv)
+                            continue  # Skip MQTT for this device
+                    except Exception as e:
+                        log.warning("Local read failed for %s: %s — falling back to cloud", dk, e)
+
+            # Fall back to cloud MQTT
+            if self.mqtt_client:
+                cid = self._channel_id(device)
+                pkt = build_ttlv_read(self._next_packet_id())
+                self.mqtt_client.publish(f"q/1/d/{cid}/bus", pkt, qos=1)
 
     def _token_needs_refresh(self) -> bool:
         if not self.token_data:
@@ -896,6 +969,82 @@ class PecronMonitor:
 # Setup wizard
 # ===========================================================================
 
+def _scan_lan_for_pecron(subnet: str = None, timeout: float = 0.3) -> list:
+    """Scan local network for devices with TCP port 6607 open."""
+    import ipaddress
+    results = []
+    if not subnet:
+        # Try to detect subnet from default interface
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+            s.close()
+            # Assume /24
+            net = ipaddress.IPv4Network(f"{local_ip}/24", strict=False)
+            subnet = str(net)
+        except Exception:
+            subnet = "192.168.1.0/24"
+
+    print(f"  Scanning {subnet} for Pecron devices (port 6607)...")
+    net = ipaddress.IPv4Network(subnet, strict=False)
+    for host in net.hosts():
+        ip = str(host)
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            if sock.connect_ex((ip, 6607)) == 0:
+                results.append(ip)
+                print(f"  Found: {ip}")
+            sock.close()
+        except Exception:
+            pass
+    return results
+
+
+def _setup_lan_discovery(devices: list, token: str, region: dict):
+    """Interactive LAN setup: scan network, match devices, fetch auth keys."""
+    found_ips = _scan_lan_for_pecron()
+
+    if not found_ips:
+        print("  No Pecron devices found on LAN.")
+        manual_ip = input("  Enter device IP manually (or press Enter to skip): ").strip()
+        if manual_ip:
+            found_ips = [manual_ip]
+        else:
+            return
+
+    for device in devices:
+        dk = device["device_key"]
+        if len(found_ips) == 1:
+            ip = found_ips[0]
+            print(f"  Assigning {ip} to {device.get('name', dk)}")
+        else:
+            print(f"\n  Multiple Pecron devices found. Which IP is {device.get('name', dk)}?")
+            for i, ip in enumerate(found_ips):
+                print(f"    {i + 1}. {ip}")
+            choice = input(f"  Choose [1-{len(found_ips)}]: ").strip()
+            try:
+                ip = found_ips[int(choice) - 1]
+            except (ValueError, IndexError):
+                print("  Skipping.")
+                continue
+
+        device["lan_ip"] = ip
+
+        # Fetch and cache auth key
+        try:
+            print(f"  Fetching encryption key for {dk}...", end="", flush=True)
+            auth_key = get_auth_key(token, region, device["product_key"], dk)
+            device["auth_key"] = auth_key
+            print(f" ✅")
+        except Exception as e:
+            print(f" ❌ ({e})")
+            print("  Local monitoring will fetch the key on next startup (requires internet).")
+
+    print("  LAN configuration complete!")
+
+
 def setup_wizard():
     print("\n🔋 Pecron Monitor Setup\n")
 
@@ -945,6 +1094,15 @@ def setup_wizard():
 
     if not devices:
         print("⚠️  No devices added. You can add them manually to config.yaml later.")
+
+    # --- LAN Discovery (optional) ---
+    if HAS_LOCAL and devices:
+        print("\n--- Local LAN Monitoring (optional) ---")
+        print("If your device is on the same network, local monitoring works")
+        print("without internet (great for vanlife, off-grid, etc.)\n")
+        do_lan = input("Scan for devices on LAN? [Y/n]: ").strip().lower() != "n"
+        if do_lan:
+            _setup_lan_discovery(devices, token_data["token"], REGIONS[region])
 
     poll = input("\nPoll interval in seconds [60]: ").strip() or "60"
     threshold = input("Low battery alert threshold % [20]: ").strip() or "20"

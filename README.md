@@ -2,13 +2,11 @@
 
 Real-time monitoring and control for Pecron portable power stations — no phone required.
 
+**Works locally over WiFi (no internet needed) with cloud fallback.** Perfect for vanlife, off-grid, and anywhere you want monitoring without depending on Pecron's servers.
+
 Works with **any** Pecron power station that uses the Pecron app: E300LFP, E500LFP, E600LFP, E800LFP, E1000LFP, E1500LFP, E2000LFP, E2200LFP, E2400LFP, E3600, E3600LFP, E3800LFP, F1000LFP, F3000LFP, F5000LFP, C300LFP Mini, WB12200, and future models.
 
 Runs on a Raspberry Pi, Linux server, Mac, or any computer with Python.
-
-Pecron are the best value for money and have the best DC output in class. The only thing lacking is their app. This fills that gap! Get a cheap computer like raspberry pi and use it to it's full potential.
-
-If you need GEO/AEO services check out our website! attractifymarketing.com
 
 ---
 
@@ -22,6 +20,40 @@ That means you can:
 - **Turn AC/DC outputs on and off** from the command line
 - **Set up automations** like "turn off AC when battery drops below 10%"
 - **Integrate with Home Assistant** so your Pecron shows up as a smart home device
+- **Work offline** — local WiFi monitoring with no internet required (cloud fallback when available)
+
+---
+
+
+## Local LAN Monitoring (No Internet Required)
+
+If your Pecron and computer are on the same WiFi network, the monitor can talk directly to the device over TCP — no cloud, no internet, no Pecron servers involved.
+
+This is ideal for:
+- **Vanlife / RV** — monitor your battery on the road without cell service
+- **Off-grid setups** — solar cabin, remote workshop, etc.
+- **Reliability** — works even if Pecron's cloud goes down
+
+### How It Works
+
+1. Run  and answer "Yes" when asked to scan for LAN devices
+2. The setup wizard scans your network for Pecron devices (port 6607)
+3. It fetches a one-time encryption key from the cloud (cached locally)
+4. Done! The monitor tries local first, falls back to cloud automatically
+
+### Manual LAN Setup
+
+Add  and optionally  to your device in :
+
+
+
+The  is fetched automatically from the cloud on first run (requires internet once). After that, it's cached and everything works offline.
+
+### Finding Your Device's IP
+
+Your Pecron device listens on TCP port 6607 when connected to WiFi. To find it:
+- Check your router's DHCP client list for a device with MAC starting with 
+- Or run:  (replace with your subnet)
 
 ---
 
