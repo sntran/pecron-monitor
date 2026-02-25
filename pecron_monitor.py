@@ -195,6 +195,39 @@ def get_product_catalog(token: str, region: dict) -> dict:
     return {p["productKey"]: p["name"] for p in body.get("data", {}).get("list", [])}
 
 
+def get_user_devices(token: str, region: dict) -> list:
+    """Get devices already bound to the user's account (correct pk/dk pairs).
+    
+    This is the most reliable way to discover devices — returns the exact
+    product_key and device_key that the cloud has on file, avoiding
+    mismatches that cause 'device is not bound' (4007) errors.
+    """
+    url = region["base_url"] + "/v2/binding/enduserapi/userDeviceList"
+    req = urllib.request.Request(url)
+    req.add_header("Authorization", token)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read())
+        if body.get("code") != 200:
+            log.debug("userDeviceList failed: %s", body.get("msg", body))
+            return []
+        data = body.get("data", {})
+        device_list = data.get("list", data) if isinstance(data, dict) else data
+        if not isinstance(device_list, list):
+            return []
+        devices = []
+        for d in device_list:
+            pk = d.get("productKey", "")
+            dk = d.get("deviceKey", "")
+            name = d.get("productName", d.get("deviceName", "Unknown"))
+            if pk and dk:
+                devices.append({"product_key": pk, "device_key": dk, "name": name})
+        return devices
+    except Exception as e:
+        log.debug("userDeviceList request failed: %s", e)
+        return []
+
+
 def get_product_tsl(token: str, region: dict, product_key: str) -> dict:
     """Fetch TSL (data model) for a product — gives us data point IDs."""
     url = region["base_url"] + f"/v2/binding/enduserapi/productTSL?pk={product_key}"
@@ -343,9 +376,29 @@ def resolve_devices(config: dict, token: str, region: dict) -> list:
             if api_name != name and name != "Unknown":
                 log.info("     ℹ️  API identifies this as '%s' (config says '%s')", api_name, name)
         else:
-            log.warning("  ❌ %s (%s) — not found or not bound", name, dk)
-            log.warning("     Check that your device_key is correct (Pecron app → Device → ⚙️ → Device Info → Device Key/Code)")
-            log.warning("     It should be 12 hex characters (your device's MAC address)")
+            # Try to find correct pk from userDeviceList
+            account_devs = get_user_devices(token, region)
+            corrected = None
+            for ad in account_devs:
+                if ad["device_key"].upper() == dk.upper():
+                    corrected = ad
+                    break
+            if corrected and corrected["product_key"] != pk:
+                log.warning("  ⚠️  %s (%s) — wrong product_key in config (pk=%s)", name, dk, pk)
+                log.info("     Auto-correcting to pk=%s (from account device list)", corrected["product_key"])
+                pk = corrected["product_key"]
+                tsl = get_product_tsl(token, region, pk)
+                devices.append({
+                    "product_key": pk, "device_key": dk,
+                    "device_name": corrected["name"],
+                    "product_name": corrected["name"],
+                    "controls": tsl or DEFAULT_CONTROLS,
+                })
+                log.info("  ✅ %s (pk=%s, dk=%s)", corrected["name"], pk, dk)
+            else:
+                log.warning("  ❌ %s (%s) — not found or not bound", name, dk)
+                log.warning("     Check that your device_key is correct (Pecron app → Device → ⚙️ → Device Info → Device Key/Code)")
+                log.warning("     It should be 12 hex characters (your device's MAC address)")
     return devices
 
 
@@ -1272,18 +1325,48 @@ def setup_wizard():
         print(f"❌ Login failed: {e}")
         return
 
-    catalog = get_product_catalog(token_data["token"], REGIONS[region])
-
+    # Try to discover devices from account first (most reliable — gives correct pk/dk)
     print("\n--- Device Setup ---")
-    print("You need your device key (MAC address). Find it in the Pecron app:")
-    print("  Device → Settings (⚙️) → Device Info → Device Key")
-    print("  It looks like: AABBCCDDEEFF (12 hex characters)")
-    print("")
-    print("  (Some app versions label this 'Device Code' instead of 'Device Key' — same thing)")
-    print("")
-
+    account_devices = get_user_devices(token_data["token"], REGIONS[region])
     devices = []
-    while True:
+    use_manual = False
+
+    if account_devices:
+        print(f"Found {len(account_devices)} device(s) on your account:\n")
+        for i, d in enumerate(account_devices, 1):
+            print(f"  {i}. {d['name']}  (dk={d['device_key']})")
+        print(f"  {len(account_devices) + 1}. Skip — enter device key manually instead")
+        print("")
+        default_sel = ",".join(str(i + 1) for i in range(len(account_devices)))
+        choice = input(f"Select devices to monitor (e.g. 1 or 1,2) [{default_sel}]: ").strip() or default_sel
+
+        for c in choice.split(","):
+            c = c.strip()
+            try:
+                idx = int(c) - 1
+                if idx == len(account_devices):
+                    use_manual = True
+                elif 0 <= idx < len(account_devices):
+                    d = account_devices[idx]
+                    devices.append(d)
+                    print(f"  ✅ Added: {d['name']} ({d['device_key']})")
+            except ValueError:
+                pass
+    else:
+        print("Could not auto-discover devices from your account.")
+        use_manual = True
+
+    if use_manual or not devices:
+        catalog = get_product_catalog(token_data["token"], REGIONS[region])
+        print("\nManual device entry:")
+        print("You need your device key (MAC address). Find it in the Pecron app:")
+        print("  Device → Settings (⚙️) → Device Info → Device Key")
+        print("  It looks like: AABBCCDDEEFF (12 hex characters)")
+        print("")
+        print("  (Some app versions label this 'Device Code' instead of 'Device Key' — same thing)")
+        print("")
+
+    while use_manual:
         dk = input("Device Key (or press Enter to finish): ").strip().upper()
         if not dk:
             break
