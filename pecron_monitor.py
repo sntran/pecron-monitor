@@ -252,6 +252,60 @@ def get_device_online_status(token: str, region: dict, product_key: str, device_
     return {}
 
 
+def get_device_properties_rest(token: str, region: dict, pk: str, dk: str) -> dict:
+    """Read device properties via REST API (same method as ha-pecron HACS addon).
+
+    This is a reliable fallback when MQTT doesn't deliver data — it queries the
+    cloud API directly for current device state.
+
+    Returns a kv dict compatible with _process_data().
+    """
+    url = (region["base_url"] +
+           f"/v2/binding/enduserapi/getDeviceBusinessAttributes?pk={pk}&dk={dk}")
+    req = urllib.request.Request(url)
+    req.add_header("Authorization", token)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read())
+        if body.get("code") != 200:
+            log.debug("REST properties failed: %s", body.get("msg", body))
+            return {}
+
+        tsl_info = body.get("data", {}).get("customizeTslInfo", [])
+        if not tsl_info:
+            log.debug("REST properties returned empty TSL info")
+            return {}
+
+        # Convert TSL info array to kv dict matching MQTT format
+        kv = {}
+        for item in tsl_info:
+            code = item.get("code", "")
+            value = item.get("value")
+
+            if value is None:
+                continue
+
+            # Handle struct types (nested dicts)
+            if isinstance(value, dict):
+                kv[code] = value
+            elif isinstance(value, list):
+                kv[code] = value
+            elif isinstance(value, bool):
+                kv[code] = value
+            elif isinstance(value, (int, float)):
+                kv[code] = value
+            else:
+                try:
+                    kv[code] = int(value)
+                except (ValueError, TypeError):
+                    kv[code] = value
+
+        return kv
+    except Exception as e:
+        log.debug("REST properties request failed: %s", e)
+        return {}
+
+
 def resolve_devices(config: dict, token: str, region: dict) -> list:
     catalog = get_product_catalog(token, region)
     devices = []
@@ -931,7 +985,7 @@ class PecronMonitor:
                     except Exception as e:
                         log.warning("Local TCP read failed for %s: %s", dk, e)
 
-            # Fall back to cloud MQTT
+            # Try cloud MQTT first
             if self.mqtt_client:
                 cid = self._channel_id(device)
                 pkt = build_ttlv_read(self._next_packet_id())
@@ -939,6 +993,18 @@ class PecronMonitor:
                 result = self.mqtt_client.publish(topic, pkt, qos=1)
                 log.debug("Published TTLV read to %s (rc=%s, mid=%s)",
                           topic, result.rc, result.mid)
+
+            # If we haven't received MQTT data for this device yet, try REST API
+            if dk not in self.latest_data:
+                log.debug("No MQTT data for %s yet, trying REST API fallback...", dk)
+                kv = get_device_properties_rest(
+                    self.token_data["token"], self.region,
+                    device["product_key"], dk
+                )
+                if kv:
+                    log.info("Got data via REST API for %s", dk)
+                    self.latest_data[dk] = kv
+                    self._process_data(dk, kv)
 
     def _token_needs_refresh(self) -> bool:
         if not self.token_data:
