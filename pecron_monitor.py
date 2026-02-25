@@ -755,6 +755,12 @@ class PecronMonitor:
         total_out = int(_get_kv(kv, SENSOR_FIELDS["total_output_power"], 0))
         remain = int(_get_kv(kv, SENSOR_FIELDS["remain_time"], 0))
 
+        # Skip processing if data is clearly invalid (no real reading)
+        if battery_pct < 0 and voltage == 0 and total_in == 0 and total_out == 0:
+            log.debug("Skipping invalid/empty data for %s (battery=%d%%, voltage=%.1fV)",
+                      device_key, battery_pct, voltage)
+            return
+
         log.info("🔋 %s%% | %.1fV | %d°C | ⚡ In:%dW Out:%dW | ⏱ %dh%dm",
                  battery_pct, voltage, temp, total_in, total_out,
                  remain // 60, remain % 60)
@@ -903,8 +909,13 @@ class PecronMonitor:
                 # Check condition
                 triggered = False
                 if "battery_below" in condition:
+                    # Ignore invalid battery readings (-1 means no data)
+                    if battery_pct < 0:
+                        continue
                     triggered = battery_pct <= condition["battery_below"]
                 elif "battery_above" in condition:
+                    if battery_pct < 0:
+                        continue
                     triggered = battery_pct >= condition["battery_above"]
                 elif "input_power_below" in condition:
                     triggered = int(kv.get("total_input_power", 0)) <= condition["input_power_below"]
