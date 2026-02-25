@@ -587,8 +587,8 @@ Don't know your product key? No problem — the setup wizard finds it automatica
 - The device key is 12 characters, all uppercase letters and numbers (e.g., `AABBCCDDEEFF`)
 - Check that you selected the right region (NA, EU, or CN)
 
-### ⚠️ "Device Code" vs "Device Key" — they're different!
-The Pecron app shows several identifiers in Device Info. You need **Device Key**, which is your device's MAC address (12 hex characters like `682499E40D61`). **Device Code** is a different field and won't work. If your device shows up but pulls no data, this is likely the problem.
+### Finding your Device Key (also called "Device Code")
+Depending on your Pecron app version and model, this field may be labeled **Device Key** or **Device Code** in Device Info. Either way, it's your device's MAC address — 12 hex characters like `682499E40D61` or `58DB12345678`. That's the value you need for setup.
 
 ### My model shows up as the wrong name
 The API controls the product name — it's pulled from Pecron's cloud catalog, not your device. Sometimes the catalog name doesn't match the marketing name (e.g., showing "F2000LFP" for an E3600LFP). This is usually cosmetic and doesn't affect functionality. If you're getting no data despite the name mismatch, run `--diagnose` to check if the product_key/device_key binding is correct.

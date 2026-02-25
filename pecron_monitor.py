@@ -265,8 +265,8 @@ def resolve_devices(config: dict, token: str, region: dict) -> list:
                 log.info("     ℹ️  API identifies this as '%s' (config says '%s')", api_name, name)
         else:
             log.warning("  ❌ %s (%s) — not found or not bound", name, dk)
-            log.warning("     Check that your device_key is correct (Pecron app → Device → ⚙️ → Device Info → Device Key)")
-            log.warning("     'Device Key' and 'Device Code' are different fields — make sure you use 'Device Key'")
+            log.warning("     Check that your device_key is correct (Pecron app → Device → ⚙️ → Device Info → Device Key/Code)")
+            log.warning("     It should be 12 hex characters (your device's MAC address)")
     return devices
 
 
@@ -1157,7 +1157,7 @@ def setup_wizard():
     print("  Device → Settings (⚙️) → Device Info → Device Key")
     print("  It looks like: AABBCCDDEEFF (12 hex characters)")
     print("")
-    print("  ⚠️  Use 'Device Key', NOT 'Device Code' — they're different fields!")
+    print("  (Some app versions label this 'Device Code' instead of 'Device Key' — same thing)")
     print("")
 
     devices = []
@@ -1423,9 +1423,8 @@ def main():
                         break
                 if not found:
                     print(f"   ❌ Device key {dk} not found under ANY product.")
-                    print(f"   ⚠️  Double-check you're using 'Device Key' (not 'Device Code') from the Pecron app.")
-                    print(f"      Device Key = MAC address (12 hex chars like AABBCCDDEEFF)")
-                    print(f"      Device Code = different field, won't work here")
+                    print(f"   ⚠️  Double-check your device key from the Pecron app (Device Info → Device Key or Device Code).")
+                    print(f"      Should be 12 hex characters (MAC address) like AABBCCDDEEFF")
 
             # TSL
             tsl = get_product_tsl(token_data["token"], region, pk)
