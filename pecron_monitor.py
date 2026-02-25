@@ -1165,17 +1165,47 @@ def setup_wizard():
         dk = input("Device Key (or press Enter to finish): ").strip().upper()
         if not dk:
             break
-        found_pk = None
-        print("  Looking up device...", end="", flush=True)
-        for pk, name in catalog.items():
-            info = verify_device(token_data["token"], REGIONS[region], pk, dk)
-            if info:
-                found_pk = pk
-                print(f"\r  ✅ Found: {info.get('productName', name)} ({dk})")
-                devices.append({"product_key": pk, "device_key": dk, "name": name})
-                break
-        if not found_pk:
-            print(f"\r  ❌ Device {dk} not found. Check the key and try again.")
+
+        print("\nHow would you like to identify your product?")
+        print("  1. Auto-detect (scan all models) [default]")
+        print("  2. Select from list")
+        method = input("Choose [1]: ").strip() or "1"
+
+        if method == "2":
+            # Manual selection from catalog
+            sorted_products = sorted(catalog.items(), key=lambda x: x[1])
+            print("\nAvailable models:")
+            for i, (pk, name) in enumerate(sorted_products, 1):
+                print(f"  {i:2d}. {name}")
+            choice = input(f"Select [1-{len(sorted_products)}]: ").strip()
+            try:
+                idx = int(choice) - 1
+                pk, name = sorted_products[idx]
+                print(f"  Verifying {name} with key {dk}...", end="", flush=True)
+                info = verify_device(token_data["token"], REGIONS[region], pk, dk)
+                if info:
+                    api_name = info.get("productName", name)
+                    print(f"\r  ✅ Verified: {api_name} ({dk})")
+                    devices.append({"product_key": pk, "device_key": dk, "name": api_name})
+                else:
+                    print(f"\r  ❌ Device {dk} not found under {name}.")
+                    print("  Try auto-detect, or double-check your device key.")
+            except (ValueError, IndexError):
+                print("  Invalid selection.")
+        else:
+            # Auto-detect
+            found_pk = None
+            print("  Scanning all models...", end="", flush=True)
+            for pk, name in catalog.items():
+                info = verify_device(token_data["token"], REGIONS[region], pk, dk)
+                if info:
+                    found_pk = pk
+                    api_name = info.get("productName", name)
+                    print(f"\r  ✅ Found: {api_name} ({dk})")
+                    devices.append({"product_key": pk, "device_key": dk, "name": api_name})
+                    break
+            if not found_pk:
+                print(f"\r  ❌ Device {dk} not found. Check the key and try again.")
 
     if not devices:
         print("⚠️  No devices added. You can add them manually to config.yaml later.")
