@@ -740,7 +740,15 @@ class PecronMonitor:
             code = payload.get("code")
             msg_text = payload.get("msg", "")
             msg_type = payload.get("type", "")
-            if code and code != 200:
+            if code == 4007:
+                if not hasattr(self, '_4007_warned'):
+                    self._4007_warned = True
+                    log.error("Cloud says 'device is not bound' (code 4007).")
+                    log.error("This usually means the wrong product_key is configured.")
+                    log.error("Your device model may have multiple product keys in Pecron's system.")
+                    log.error("Fix: Run 'python pecron_monitor.py --setup' and use auto-detect (option 1).")
+                    log.error("If auto-detect finds multiple matches, try each one until MQTT data flows.")
+            elif code and code != 200:
                 log.warning("Cloud system message: code=%s msg='%s' type=%s", code, msg_text, msg_type)
             else:
                 log.debug("Cloud system message: code=%s msg='%s' type=%s", code, msg_text, msg_type)
@@ -1290,7 +1298,7 @@ def setup_wizard():
             sorted_products = sorted(catalog.items(), key=lambda x: x[1])
             print("\nAvailable models:")
             for i, (pk, name) in enumerate(sorted_products, 1):
-                print(f"  {i:2d}. {name}")
+                print(f"  {i:2d}. {name}  (pk={pk})")
             choice = input(f"Select [1-{len(sorted_products)}]: ").strip()
             try:
                 idx = int(choice) - 1
@@ -1307,18 +1315,34 @@ def setup_wizard():
             except (ValueError, IndexError):
                 print("  Invalid selection.")
         else:
-            # Auto-detect
-            found_pk = None
+            # Auto-detect — try all matching product keys
+            matches = []
             print("  Scanning all models...", end="", flush=True)
             for pk, name in catalog.items():
                 info = verify_device(token_data["token"], REGIONS[region], pk, dk)
                 if info:
-                    found_pk = pk
                     api_name = info.get("productName", name)
-                    print(f"\r  ✅ Found: {api_name} ({dk})")
-                    devices.append({"product_key": pk, "device_key": dk, "name": api_name})
-                    break
-            if not found_pk:
+                    matches.append({"pk": pk, "name": api_name, "info": info})
+
+            if len(matches) == 1:
+                m = matches[0]
+                print(f"\r  ✅ Found: {m['name']} ({dk})")
+                devices.append({"product_key": m["pk"], "device_key": dk, "name": m["name"]})
+            elif len(matches) > 1:
+                print(f"\r  Found {len(matches)} matching product entries:")
+                for i, m in enumerate(matches, 1):
+                    print(f"    {i}. {m['name']}  (pk={m['pk']})")
+                print("  ℹ️  Multiple product keys match your device. If monitoring shows")
+                print("     'device is not bound', try --setup again and select a different one.")
+                choice = input(f"  Select [1-{len(matches)}] (default=1): ").strip() or "1"
+                try:
+                    idx = int(choice) - 1
+                    m = matches[idx]
+                except (ValueError, IndexError):
+                    m = matches[0]
+                print(f"  ✅ Using: {m['name']} (pk={m['pk']})")
+                devices.append({"product_key": m["pk"], "device_key": dk, "name": m["name"]})
+            else:
                 print(f"\r  ❌ Device {dk} not found. Check the key and try again.")
 
     if not devices:
