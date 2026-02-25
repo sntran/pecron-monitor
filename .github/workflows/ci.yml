@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Syntax check
+        run: python -m py_compile pecron_monitor.py && python -m py_compile local_transport.py
+
+      - name: Import check
+        run: python -c "import pecron_monitor; print(f'pecron-monitor {pecron_monitor.__version__}')"
+
+      - name: Version consistency
+        run: |
+          PY_VER=$(python -c "import pecron_monitor; print(pecron_monitor.__version__)")
+          if grep -q "## \[$PY_VER\]" CHANGELOG.md; then
+            echo "✅ Version $PY_VER found in CHANGELOG.md"
+          else
+            echo "❌ Version $PY_VER not found in CHANGELOG.md"
+            exit 1
+          fi
