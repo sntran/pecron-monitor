@@ -1,0 +1,56 @@
+name: Bug Report
+description: Something isn't working right
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "Run: python pecron_monitor.py --version"
+      placeholder: "0.5.1"
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Pecron Model
+      placeholder: "E1500LFP, E300LFP, F3000LFP, etc."
+    validations:
+      required: true
+  - type: dropdown
+    id: connection
+    attributes:
+      label: Connection Method
+      options:
+        - WiFi TCP (local)
+        - Bluetooth (BLE)
+        - Cloud (MQTT)
+        - Multiple / All
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS / Platform
+      placeholder: "macOS 15, Ubuntu 24.04, Raspberry Pi OS, etc."
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the bug clearly
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Verbose logs
+      description: "Run with -v flag: `python pecron_monitor.py --status -v 2>&1`"
+      render: text
+  - type: textarea
+    id: raw
+    attributes:
+      label: Raw data output (if applicable)
+      description: "Run: `python pecron_monitor.py --raw -v`"
+      render: json
