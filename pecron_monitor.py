@@ -104,36 +104,62 @@ DEFAULT_CONTROLS = {
 }
 
 # Common sensor field mappings — works across all known Pecron models.
-# The MQTT kv dict uses these nested keys; models may omit some.
+# Each sensor maps to a list of paths to try (first match wins).
+# Some models (E1500LFP) nest battery/voltage in host_packet_data_jdb,
+# while others (E300LFP) report them at the top level.
 SENSOR_FIELDS = {
-    "battery_percent": ("host_packet_data_jdb", "host_packet_electric_percentage"),
-    "voltage": ("host_packet_data_jdb", "host_packet_voltage"),
-    "temperature": ("host_packet_data_jdb", "host_packet_temp"),
-    "charge_status": ("host_packet_data_jdb", "host_packet_status"),
-    "total_input_power": ("total_input_power",),
-    "total_output_power": ("total_output_power",),
-    "remain_time": ("remain_time",),
-    "ac_output_power": ("ac_data_output_hm", "ac_output_power"),
-    "ac_output_voltage": ("ac_data_output_hm", "ac_output_voltage"),
-    "dc_output_power": ("dc_data_output_hm", "dc_output_power"),
-    "ac_input_power": ("ac_data_input_hm", "ac_power"),
-    "dc_input_power": ("dc_data_input_hm", "dc_input_power"),
-    "ac_switch": ("ac_switch_hm",),
-    "dc_switch": ("dc_switch_hm",),
-    "ups_mode": ("ups_status_hm",),
+    "battery_percent": [
+        ("host_packet_data_jdb", "host_packet_electric_percentage"),
+        ("battery_percentage",),
+    ],
+    "voltage": [
+        ("host_packet_data_jdb", "host_packet_voltage"),
+    ],
+    "temperature": [
+        ("host_packet_data_jdb", "host_packet_temp"),
+    ],
+    "charge_status": [
+        ("host_packet_data_jdb", "host_packet_status"),
+    ],
+    "total_input_power": [("total_input_power",)],
+    "total_output_power": [("total_output_power",)],
+    "remain_time": [("remain_time",)],
+    "ac_output_power": [("ac_data_output_hm", "ac_output_power")],
+    "ac_output_voltage": [("ac_data_output_hm", "ac_output_voltage")],
+    "dc_output_power": [("dc_data_output_hm", "dc_output_power")],
+    "ac_input_power": [("ac_data_input_hm", "ac_power")],
+    "dc_input_power": [("dc_data_input_hm", "dc_input_power")],
+    "ac_switch": [("ac_switch_hm",)],
+    "dc_switch": [("dc_switch_hm",)],
+    "ups_mode": [("ups_status_hm",)],
 }
 
 
-def _get_kv(kv: dict, path: tuple, default=None):
-    """Safely navigate nested kv dict by path tuple."""
+def _get_kv(kv: dict, paths, default=None):
+    """Safely navigate nested kv dict. Accepts a single path tuple or a list of paths to try."""
+    if not paths:
+        return default
+    # If it's a list of tuples, try each path
+    if isinstance(paths, list):
+        for path in paths:
+            result = _get_kv_single(kv, path)
+            if result is not None:
+                return result
+        return default
+    # Single tuple path
+    return _get_kv_single(kv, paths) if _get_kv_single(kv, paths) is not None else default
+
+
+def _get_kv_single(kv: dict, path: tuple):
+    """Safely navigate nested kv dict by a single path tuple."""
     obj = kv
     for key in path:
         if isinstance(obj, dict):
             obj = obj.get(key)
         else:
-            return default
+            return None
         if obj is None:
-            return default
+            return None
     return obj
 
 CONFIG_PATH = Path(__file__).parent / "config.yaml"
