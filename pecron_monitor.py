@@ -236,6 +236,22 @@ def verify_device(token: str, region: dict, product_key: str, device_key: str) -
     return {}
 
 
+def get_device_online_status(token: str, region: dict, product_key: str, device_key: str) -> dict:
+    """Check if device is online via cloud API."""
+    url = (region["base_url"] +
+           f"/v2/binding/enduserapi/getDeviceOnlineStatus?pk={product_key}&dk={device_key}")
+    req = urllib.request.Request(url)
+    req.add_header("Authorization", token)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read())
+        if body.get("code") == 200:
+            return body.get("data", {})
+    except Exception as e:
+        log.debug("Online status check failed: %s", e)
+    return {}
+
+
 def resolve_devices(config: dict, token: str, region: dict) -> list:
     catalog = get_product_catalog(token, region)
     devices = []
@@ -260,7 +276,16 @@ def resolve_devices(config: dict, token: str, region: dict) -> list:
                 "product_name": api_name,
                 "controls": tsl or DEFAULT_CONTROLS,
             })
-            log.info("  ✅ %s (pk=%s, dk=%s)", api_name, pk, dk)
+            # Check online status
+            online_info = get_device_online_status(token, region, pk, dk)
+            online = online_info.get("online", online_info.get("value"))
+            if online:
+                log.info("  ✅ %s (pk=%s, dk=%s) — ONLINE", api_name, pk, dk)
+            else:
+                log.warning("  ⚠️  %s (pk=%s, dk=%s) — OFFLINE (device may not be connected to WiFi/internet)", api_name, pk, dk)
+                log.warning("     MQTT monitoring will not receive data until the device is online.")
+                log.warning("     Check: Is the device powered on? Is it connected to WiFi?")
+                log.warning("     In the Pecron app, go to the device — if it shows 'offline', the device can't reach the cloud.")
             if api_name != name and name != "Unknown":
                 log.info("     ℹ️  API identifies this as '%s' (config says '%s')", api_name, name)
         else:
@@ -656,6 +681,15 @@ class PecronMonitor:
             log.info("Device %s is now %s", device_key, "online" if online else "offline")
         elif topic_suffix == "ack_":
             log.debug("ACK received for device %s", device_key)
+        elif topic_suffix == "sys_":
+            # System messages (responses to our publishes, device online/offline events)
+            code = payload.get("code")
+            msg_text = payload.get("msg", "")
+            msg_type = payload.get("type", "")
+            if code and code != 200:
+                log.warning("Cloud system message: code=%s msg='%s' type=%s", code, msg_text, msg_type)
+            else:
+                log.debug("Cloud system message: code=%s msg='%s' type=%s", code, msg_text, msg_type)
 
     # --- Data processing ---
 
@@ -901,7 +935,10 @@ class PecronMonitor:
             if self.mqtt_client:
                 cid = self._channel_id(device)
                 pkt = build_ttlv_read(self._next_packet_id())
-                self.mqtt_client.publish(f"q/1/d/{cid}/bus", pkt, qos=1)
+                topic = f"q/1/d/{cid}/bus"
+                result = self.mqtt_client.publish(topic, pkt, qos=1)
+                log.debug("Published TTLV read to %s (rc=%s, mid=%s)",
+                          topic, result.rc, result.mid)
 
     def _token_needs_refresh(self) -> bool:
         if not self.token_data:
