@@ -253,15 +253,20 @@ def resolve_devices(config: dict, token: str, region: dict) -> list:
         if info:
             # Fetch TSL for this product
             tsl = get_product_tsl(token, region, pk)
+            api_name = info.get("productName", name)
             devices.append({
                 "product_key": pk, "device_key": dk,
-                "device_name": info.get("productName", name),
-                "product_name": info.get("productName", name),
+                "device_name": api_name,
+                "product_name": api_name,
                 "controls": tsl or DEFAULT_CONTROLS,
             })
-            log.info("  ✅ %s (%s)", name, dk)
+            log.info("  ✅ %s (pk=%s, dk=%s)", api_name, pk, dk)
+            if api_name != name and name != "Unknown":
+                log.info("     ℹ️  API identifies this as '%s' (config says '%s')", api_name, name)
         else:
             log.warning("  ❌ %s (%s) — not found or not bound", name, dk)
+            log.warning("     Check that your device_key is correct (Pecron app → Device → ⚙️ → Device Info → Device Key)")
+            log.warning("     'Device Key' and 'Device Code' are different fields — make sure you use 'Device Key'")
     return devices
 
 
@@ -620,26 +625,37 @@ class PecronMonitor:
         for device in self.devices:
             cid = self._channel_id(device)
             for suffix in ["bus_", "ack_", "onl_"]:
-                client.subscribe(f"q/2/d/{cid}/{suffix}", qos=1)
-            log.info("Subscribed to %s (%s)", device["device_name"], device["device_key"])
+                topic = f"q/2/d/{cid}/{suffix}"
+                client.subscribe(topic, qos=1)
+                log.debug("  Subscribed: %s", topic)
+            log.info("Subscribed to %s (pk=%s, dk=%s, channel=%s)",
+                     device["device_name"], device["product_key"],
+                     device["device_key"], cid)
 
     def _on_message(self, client, userdata, msg):
         try:
             payload = json.loads(msg.payload.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
+            log.debug("Non-JSON MQTT message on %s (%d bytes)", msg.topic, len(msg.payload))
             return
 
         topic_suffix = msg.topic.split("/")[-1]
         device_key = payload.get("deviceKey", "")
+        log.debug("MQTT message: topic=%s suffix=%s dk=%s keys=%s",
+                  msg.topic, topic_suffix, device_key, list(payload.keys()))
 
         if topic_suffix == "bus_" and "data" in payload:
             kv = payload["data"].get("kv", {})
             if kv:
                 self.latest_data[device_key] = kv
                 self._process_data(device_key, kv)
+            else:
+                log.debug("bus_ message with empty kv: %s", list(payload["data"].keys()))
         elif topic_suffix == "onl_" and "data" in payload:
             online = payload["data"].get("value", 0) == 1
             log.info("Device %s is now %s", device_key, "online" if online else "offline")
+        elif topic_suffix == "ack_":
+            log.debug("ACK received for device %s", device_key)
 
     # --- Data processing ---
 
@@ -1139,7 +1155,10 @@ def setup_wizard():
     print("\n--- Device Setup ---")
     print("You need your device key (MAC address). Find it in the Pecron app:")
     print("  Device → Settings (⚙️) → Device Info → Device Key")
-    print("  It looks like: AABBCCDDEEFF\n")
+    print("  It looks like: AABBCCDDEEFF (12 hex characters)")
+    print("")
+    print("  ⚠️  Use 'Device Key', NOT 'Device Code' — they're different fields!")
+    print("")
 
     devices = []
     while True:
@@ -1258,6 +1277,8 @@ def main():
     parser.add_argument("--controls", action="store_true", help="List available controls from TSL")
     parser.add_argument("--control", nargs=2, metavar=("CODE", "VALUE"),
                         help="Set any control: --control ac_switch_hm true")
+    parser.add_argument("--diagnose", action="store_true",
+                        help="Run diagnostics: verify device binding, show MQTT topics, wait for data")
     parser.add_argument("--config", type=str, default=str(CONFIG_PATH), help="Config file path")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
     args = parser.parse_args()
@@ -1346,6 +1367,113 @@ def main():
             print(f"Device {dk}: sent {code}={parsed_val}")
         monitor.mqtt_client.loop_stop()
         monitor.mqtt_client.disconnect()
+        return
+
+    if args.diagnose:
+        print("\n🔍 Pecron Monitor Diagnostics\n")
+        region = REGIONS[config["region"]]
+
+        # Step 1: Auth
+        print("1. Authentication...")
+        try:
+            token_data = login(config["email"], config["password"], region)
+            print(f"   ✅ Logged in (uid: {token_data['uid']})")
+        except Exception as e:
+            print(f"   ❌ Login failed: {e}")
+            sys.exit(1)
+
+        # Step 2: Product catalog
+        print("\n2. Product catalog...")
+        catalog = get_product_catalog(token_data["token"], region)
+        print(f"   Found {len(catalog)} products in catalog")
+
+        # Step 3: Device verification
+        print("\n3. Device verification...")
+        for d in config.get("devices", []):
+            pk, dk = d["product_key"], d["device_key"]
+            config_name = d.get("name", "Unknown")
+            catalog_name = catalog.get(pk, "NOT IN CATALOG")
+            print(f"\n   Device: {config_name}")
+            print(f"   Config product_key: {pk}")
+            print(f"   Config device_key:  {dk}")
+            print(f"   Catalog name for pk: {catalog_name}")
+
+            info = verify_device(token_data["token"], region, pk, dk)
+            if info:
+                api_name = info.get("productName", "?")
+                print(f"   ✅ Device verified — API says: {api_name}")
+                if api_name != config_name:
+                    print(f"   ⚠️  Name mismatch: config='{config_name}' vs API='{api_name}'")
+                    print(f"      This is cosmetic — the API controls the name shown.")
+
+                # Show binding info
+                for key in ["deviceKey", "productKey", "deviceName", "mac", "online"]:
+                    if key in info:
+                        print(f"   {key}: {info[key]}")
+            else:
+                print(f"   ❌ Device NOT found with pk={pk} dk={dk}")
+                print(f"\n   Searching all products for dk={dk}...")
+                found = False
+                for cat_pk, cat_name in catalog.items():
+                    alt_info = verify_device(token_data["token"], region, cat_pk, dk)
+                    if alt_info:
+                        print(f"   ✅ Found under: {cat_name} (pk={cat_pk})")
+                        print(f"   → Update your config.yaml: product_key: \"{cat_pk}\"")
+                        found = True
+                        break
+                if not found:
+                    print(f"   ❌ Device key {dk} not found under ANY product.")
+                    print(f"   ⚠️  Double-check you're using 'Device Key' (not 'Device Code') from the Pecron app.")
+                    print(f"      Device Key = MAC address (12 hex chars like AABBCCDDEEFF)")
+                    print(f"      Device Code = different field, won't work here")
+
+            # TSL
+            tsl = get_product_tsl(token_data["token"], region, pk)
+            if tsl:
+                rw_count = sum(1 for v in tsl.values() if "W" in v.get("access", "R").upper())
+                print(f"   TSL: {len(tsl)} properties ({rw_count} writable)")
+            else:
+                print(f"   ⚠️  TSL not available for pk={pk}")
+
+        # Step 4: MQTT test
+        print("\n4. MQTT connectivity test...")
+        print("   Connecting and waiting 15 seconds for data...\n")
+        monitor = PecronMonitor(config)
+        monitor.authenticate()
+        monitor.connect_mqtt()
+        time.sleep(3)
+        monitor._request_status()
+
+        for i in range(12):
+            time.sleep(1)
+            if monitor.latest_data:
+                break
+            if i % 3 == 2:
+                print(f"   Waiting... ({i+1}s)")
+
+        if monitor.latest_data:
+            print("   ✅ Data received!")
+            for dk, kv in monitor.latest_data.items():
+                print(f"\n   Device {dk}: {len(kv)} data fields")
+                battery = _get_kv(kv, SENSOR_FIELDS["battery_percent"])
+                if battery is not None:
+                    print(f"   Battery: {battery}%")
+                else:
+                    print(f"   ⚠️  Battery field not found in response")
+                    print(f"   Raw top-level keys: {list(kv.keys())}")
+        else:
+            print("   ❌ No data received after 15 seconds")
+            print("\n   Possible causes:")
+            print("   • Device is offline (check Pecron app)")
+            print("   • Wrong device_key (used 'Device Code' instead of 'Device Key'?)")
+            print("   • Wrong product_key (try --setup to auto-detect)")
+            print("   • Device WiFi module is sleeping (open Pecron app to wake it)")
+            print("\n   Run with -v for detailed MQTT debug logs:")
+            print(f"   python3 pecron_monitor.py --diagnose -v")
+
+        monitor.mqtt_client.loop_stop()
+        monitor.mqtt_client.disconnect()
+        print("\n✅ Diagnostics complete")
         return
 
     if args.ac is not None or args.dc is not None:

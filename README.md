@@ -583,9 +583,25 @@ Don't know your product key? No problem — the setup wizard finds it automatica
 - The battery's WiFi module may go to sleep — open the Pecron app briefly to wake it up, then try again
 
 ### "Device not found" during setup
-- Make sure you're entering the **Device Key** (MAC address), not the serial number
+- Make sure you're entering the **Device Key** (MAC address), not the serial number or Device Code
 - The device key is 12 characters, all uppercase letters and numbers (e.g., `AABBCCDDEEFF`)
 - Check that you selected the right region (NA, EU, or CN)
+
+### ⚠️ "Device Code" vs "Device Key" — they're different!
+The Pecron app shows several identifiers in Device Info. You need **Device Key**, which is your device's MAC address (12 hex characters like `682499E40D61`). **Device Code** is a different field and won't work. If your device shows up but pulls no data, this is likely the problem.
+
+### My model shows up as the wrong name
+The API controls the product name — it's pulled from Pecron's cloud catalog, not your device. Sometimes the catalog name doesn't match the marketing name (e.g., showing "F2000LFP" for an E3600LFP). This is usually cosmetic and doesn't affect functionality. If you're getting no data despite the name mismatch, run `--diagnose` to check if the product_key/device_key binding is correct.
+
+### Connected but no data
+Run the built-in diagnostics:
+```bash
+python3 pecron_monitor.py --diagnose -v
+```
+This verifies your authentication, device binding, MQTT subscription, and waits for data — showing exactly where things break. Common fixes:
+- Your device's WiFi module may be asleep — open the Pecron app on your phone briefly to wake it
+- Wrong device_key (see "Device Code vs Device Key" above)
+- Try `--setup` again to let the wizard auto-detect your product_key
 
 ### pip install errors
 - Try `pip3 install --user -r requirements.txt`
