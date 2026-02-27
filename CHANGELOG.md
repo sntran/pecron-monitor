@@ -4,6 +4,17 @@ All notable changes to pecron-monitor are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project uses [Semantic Versioning](https://semver.org/).
 
+## [0.5.2] — 2026-02-27
+
+### Fixed
+- Local TCP transport never initialized when running `--status` or default monitoring with `lan_ip` configured — only worked with `--local` flag (#6)
+- `--local` (offline) mode triggered spurious cloud login every poll cycle due to token refresh check, causing OFFLINE warnings and dropping the local connection (#6)
+- `force_offline` flag not preserved during token refresh in `run()` loop, allowing `--local` sessions to switch to cloud mode (#6)
+- Potential crash when `mqtt_client` is `None` during token refresh cleanup
+
+### Added
+- Unit tests for local transport setup and offline mode behavior
+
 ## [0.5.1] — 2026-02-25
 
 ### Added
