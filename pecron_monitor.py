@@ -1847,8 +1847,9 @@ def main():
             print(json.dumps({dk: kv}, indent=2, default=str))
         if not monitor.latest_data:
             print("No data received — device may be offline.")
-        monitor.mqtt_client.loop_stop()
-        monitor.mqtt_client.disconnect()
+        if monitor.mqtt_client:
+            monitor.mqtt_client.loop_stop()
+            monitor.mqtt_client.disconnect()
         return
 
     if args.control:
@@ -1875,8 +1876,9 @@ def main():
         time.sleep(5)
         for dk, kv in monitor.latest_data.items():
             print(f"Device {dk}: sent {code}={parsed_val}")
-        monitor.mqtt_client.loop_stop()
-        monitor.mqtt_client.disconnect()
+        if monitor.mqtt_client:
+            monitor.mqtt_client.loop_stop()
+            monitor.mqtt_client.disconnect()
         return
 
     if args.diagnose:
@@ -1980,8 +1982,9 @@ def main():
             print("\n   Run with -v for detailed MQTT debug logs:")
             print(f"   python3 pecron_monitor.py --diagnose -v")
 
-        monitor.mqtt_client.loop_stop()
-        monitor.mqtt_client.disconnect()
+        if monitor.mqtt_client:
+            monitor.mqtt_client.loop_stop()
+            monitor.mqtt_client.disconnect()
         print("\n✅ Diagnostics complete")
         return
 
