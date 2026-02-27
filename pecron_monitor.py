@@ -18,7 +18,7 @@ Usage:
     python pecron_monitor.py --homeassistant # Start with Home Assistant MQTT bridge
 """
 
-__version__ = "0.5.3"
+__version__ = "0.5.4"
 
 import argparse
 import base64
@@ -943,6 +943,15 @@ class PecronMonitor:
             kv: Data dict
             source: One of "BLE", "LOCAL TCP", "CLOUD MQTT", "REST API"
         """
+        # Fix up kv dict for local transports (LOCAL TCP/BLE):
+        # Device firmware doesn't compute these fields — they're computed server-side by cloud
+        if source in ("LOCAL TCP", "BLE"):
+            # Fix battery_percentage: use host_packet_electric_percentage if top-level is 0
+            if kv.get("battery_percentage") == 0:
+                host_pct = _get_kv_single(kv, ("host_packet_data_jdb", "host_packet_electric_percentage"))
+                if host_pct is not None and host_pct > 0:
+                    kv["battery_percentage"] = host_pct
+
         battery_pct = int(_get_kv(kv, SENSOR_FIELDS["battery_percent"], -1))
         voltage = float(_get_kv(kv, SENSOR_FIELDS["voltage"], 0))
         temp = int(_get_kv(kv, SENSOR_FIELDS["temperature"], 0))
@@ -963,6 +972,11 @@ class PecronMonitor:
             if ac_out + dc_out > 0:
                 total_out = ac_out + dc_out
 
+        # Fix remain_time: local TCP returns unreliable values
+        # If remain_time is suspiciously low while battery is high, mark it as unreliable
+        if source in ("LOCAL TCP", "BLE") and remain <= 5 and battery_pct > 50:
+            remain = -1  # Mark as invalid
+
         # Skip processing if data is clearly invalid (no real reading)
         if battery_pct < 0 and voltage == 0 and total_in == 0 and total_out == 0:
             log.debug("Skipping invalid/empty data for %s (battery=%d%%, voltage=%.1fV)",
@@ -980,9 +994,15 @@ class PecronMonitor:
         else:
             self.data_sources[device_key] = source
 
-        log.info("🔋 %s%% | %.1fV | %d°C | ⚡ In:%dW Out:%dW | ⏱ %dh%dm [via %s]",
+        # Format remain time (handle unreliable values)
+        if remain < 0:
+            remain_str = "N/A"
+        else:
+            remain_str = f"{remain // 60}h{remain % 60}m"
+
+        log.info("🔋 %s%% | %.1fV | %d°C | ⚡ In:%dW Out:%dW | ⏱ %s [via %s]",
                  battery_pct, voltage, temp, total_in, total_out,
-                 remain // 60, remain % 60, source)
+                 remain_str, source)
 
         # Publish to Home Assistant
         if self.ha_bridge:
@@ -1376,6 +1396,13 @@ class PecronMonitor:
                 if ac_out + dc_out > 0:
                     total_out = ac_out + dc_out
 
+            # Check if remain_time is unreliable (local transports often return bogus values)
+            battery_pct = int(_get_kv(kv, SENSOR_FIELDS["battery_percent"], -1))
+            if source in ("LOCAL TCP", "BLE") and remain <= 5 and battery_pct > 50:
+                remain_str = "N/A (unreliable from local)"
+            else:
+                remain_str = f"{remain // 60}h {remain % 60}m"
+
             print(f"\n{'=' * 50}")
             print(f"Device: {dk}")
             print(f"Connection: {source}")
@@ -1383,7 +1410,7 @@ class PecronMonitor:
             print(f"Battery:       {_get_kv(kv, SENSOR_FIELDS['battery_percent'], '?')}%")
             print(f"Voltage:       {float(_get_kv(kv, SENSOR_FIELDS['voltage'], 0)):.1f}V")
             print(f"Temperature:   {_get_kv(kv, SENSOR_FIELDS['temperature'], '?')}°C")
-            print(f"Remaining:     {remain // 60}h {remain % 60}m")
+            print(f"Remaining:     {remain_str}")
             print(f"Total Input:   {total_in}W")
             print(f"Total Output:  {total_out}W")
             print(f"AC Output:     {_get_kv(kv, SENSOR_FIELDS['ac_output_power'], 0)}W @ {_get_kv(kv, SENSOR_FIELDS['ac_output_voltage'], '?')}V")

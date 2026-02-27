@@ -4,6 +4,14 @@ All notable changes to pecron-monitor are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project uses [Semantic Versioning](https://semver.org/).
 
+## [0.5.4] — 2026-02-27
+
+### Fixed
+- **Local TCP returns zeros for aggregate fields** — device firmware doesn't compute `battery_percentage` locally (server-side only); monitor now falls back to `host_packet_electric_percentage` when top-level value is 0
+- **`remain_time` unreliable from local TCP** — shows suspiciously low values (e.g., 4 minutes when battery is 96%); monitor now detects and marks these as "N/A (unreliable from local)" in status display
+- **Local/BLE data sources misidentified** — when both local and cloud transports are active, cloud MQTT could overwrite the source label; now preserves local source designation when local data arrives first
+- Log output formatting improved: remain time shows "N/A" for invalid values instead of attempting to format negative numbers
+
 ## [0.5.3] — 2026-07-27
 
 ### Fixed
