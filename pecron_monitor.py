@@ -100,11 +100,11 @@ REGIONS = {
 # The TSL is fetched dynamically; these are E1500LFP defaults as fallback.
 # ---------------------------------------------------------------------------
 DEFAULT_CONTROLS = {
-    "ac_switch_hm":           {"id": 40, "type": "BOOL", "desc": "AC output"},
-    "dc_switch_hm":           {"id": 38, "type": "BOOL", "desc": "DC output"},
-    "ups_status_hm":          {"id": 27, "type": "BOOL", "desc": "UPS mode"},
-    "auto_light_flag_as":     {"id": 43, "type": "BOOL", "desc": "Auto screen light"},
-    "machine_screen_light_as":{"id": 45, "type": "ENUM", "desc": "Screen brightness"},
+    "ac_switch_hm":           {"id": 40, "type": "BOOL", "desc": "AC output", "access": "RW"},
+    "dc_switch_hm":           {"id": 38, "type": "BOOL", "desc": "DC output", "access": "RW"},
+    "ups_status_hm":          {"id": 27, "type": "BOOL", "desc": "UPS mode", "access": "RW"},
+    "auto_light_flag_as":     {"id": 43, "type": "BOOL", "desc": "Auto screen light", "access": "RW"},
+    "machine_screen_light_as":{"id": 45, "type": "ENUM", "desc": "Screen brightness", "access": "RW"},
 }
 
 # Common sensor field mappings — works across all known Pecron models.
@@ -691,6 +691,7 @@ class PecronMonitor:
         self.ble_transports = {}   # device_key → BLETransport
         self.offline_mode = False  # Set to True when running in local-only mode
         self.no_ble = no_ble  # Skip BLE transport entirely
+        self._local_data_keys = set()  # Track which device_keys got local data this polling cycle
 
         # Automation rules
         self.rules = config.get("rules", [])
@@ -906,8 +907,13 @@ class PecronMonitor:
         if topic_suffix == "bus_" and "data" in payload:
             kv = payload["data"].get("kv", {})
             if kv:
-                self.latest_data[device_key] = kv
-                self._process_data(device_key, kv, source="CLOUD MQTT")
+                # Don't overwrite local data with cloud data from async MQTT thread
+                if device_key in self._local_data_keys:
+                    log.debug("Ignoring CLOUD MQTT data for %s (local data already received this cycle)", device_key)
+                    self._process_data(device_key, kv, source="CLOUD MQTT")  # Still process for logging
+                else:
+                    self.latest_data[device_key] = kv
+                    self._process_data(device_key, kv, source="CLOUD MQTT")
             else:
                 log.debug("bus_ message with empty kv: %s", list(payload["data"].keys()))
         elif topic_suffix == "onl_" and "data" in payload:
@@ -1105,17 +1111,26 @@ class PecronMonitor:
             except Exception as e:
                 log.warning("BLE control failed: %s", e)
 
-        # Try TCP/WiFi local transport
+        # Try TCP/WiFi local transport (reconnect if needed - Pecron closes TCP after each exchange)
         lt = self.local_transports.get(device_key)
-        if lt and lt.connected:
-            try:
-                if lt.send_control(ctrl["id"], value, ctrl_type):
-                    log.info("Sent %s=%s (type=%s) to %s via TCP", control_code, value, ctrl_type, device_key)
-                    return True
-            except Exception as e:
-                log.warning("TCP control failed: %s", e)
+        if lt:
+            if not lt.connected:
+                try:
+                    self._connect_local(device_key)
+                except Exception as e:
+                    log.debug("Local TCP reconnect failed for %s: %s", device_key, e)
+            if lt.connected:
+                try:
+                    if lt.send_control(ctrl["id"], value, ctrl_type):
+                        log.info("Sent %s=%s (type=%s) to %s via TCP", control_code, value, ctrl_type, device_key)
+                        return True
+                except Exception as e:
+                    log.warning("TCP control failed: %s", e)
 
         # Fall back to cloud MQTT
+        if self.mqtt_client is None:
+            log.error("Cannot send control %s: no local transport connected and MQTT is unavailable (offline mode?)", control_code)
+            return False
         self.mqtt_client.publish(f"q/1/d/{cid}/bus", pkt, qos=1)
         log.info("Sent %s=%s (type=%s) to %s via CLOUD", control_code, value, ctrl_type, device_key)
         return True
@@ -1195,6 +1210,9 @@ class PecronMonitor:
     # --- Status request ---
 
     def _request_status(self):
+        # Clear local data keys at start of polling cycle to allow fresh tracking
+        self._local_data_keys.clear()
+
         for device in self.devices:
             dk = device["device_key"]
 
@@ -1214,6 +1232,7 @@ class PecronMonitor:
                         if kv:
                             log.debug("Got status via BLE for %s", dk)
                             self.latest_data[dk] = kv
+                            self._local_data_keys.add(dk)  # Mark as local data
                             self._process_data(dk, kv, source="BLE")
                             continue
                     except Exception as e:
@@ -1230,6 +1249,7 @@ class PecronMonitor:
                         if kv:
                             log.debug("Got status via LOCAL TCP for %s", dk)
                             self.latest_data[dk] = kv
+                            self._local_data_keys.add(dk)  # Mark as local data
                             self._process_data(dk, kv, source="LOCAL TCP")
                             continue
                     except Exception as e:
@@ -1346,6 +1366,10 @@ class PecronMonitor:
             self.connect_mqtt()
             time.sleep(3)
         else:
+            # In offline mode, explicitly connect any local transports before sending controls
+            for device in self.devices:
+                dk = device["device_key"]
+                self._connect_local(dk)
             time.sleep(1)  # Give local transports time to connect
 
         for device in self.devices:
