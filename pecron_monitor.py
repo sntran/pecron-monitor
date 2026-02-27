@@ -18,7 +18,7 @@ Usage:
     python pecron_monitor.py --homeassistant # Start with Home Assistant MQTT bridge
 """
 
-__version__ = "0.5.2"
+__version__ = "0.5.3"
 
 import argparse
 import base64
@@ -851,14 +851,19 @@ class PecronMonitor:
                     log.warning("Failed to set up BLE transport for %s: %s", dk, e)
 
     def _connect_local(self, device_key: str) -> bool:
-        """Try to connect local transport for a device."""
+        """Try to connect local transport for a device.
+
+        The Pecron device closes the TCP socket after each response,
+        so we reconnect fresh before every read — this is normal behavior.
+        """
         lt = self.local_transports.get(device_key)
-        if lt and not lt.connected:
-            try:
-                return lt.connect()
-            except Exception as e:
-                log.debug("Local connect failed for %s: %s", device_key, e)
-        return lt.connected if lt else False
+        if not lt:
+            return False
+        try:
+            return lt.connect()
+        except Exception as e:
+            log.debug("Local connect failed for %s: %s", device_key, e)
+            return False
 
     def _channel_id(self, device: dict) -> str:
         return f"qd{device['product_key']}{device['device_key']}"
@@ -945,14 +950,35 @@ class PecronMonitor:
         total_out = int(_get_kv(kv, SENSOR_FIELDS["total_output_power"], 0))
         remain = int(_get_kv(kv, SENSOR_FIELDS["remain_time"], 0))
 
+        # Some models (F3000LFP) don't report total_input/output_power at top level
+        # over local TCP — compute from AC+DC components as fallback
+        if total_in == 0:
+            ac_in = int(_get_kv(kv, SENSOR_FIELDS["ac_input_power"], 0))
+            dc_in = int(_get_kv(kv, SENSOR_FIELDS["dc_input_power"], 0))
+            if ac_in + dc_in > 0:
+                total_in = ac_in + dc_in
+        if total_out == 0:
+            ac_out = int(_get_kv(kv, SENSOR_FIELDS["ac_output_power"], 0))
+            dc_out = int(_get_kv(kv, SENSOR_FIELDS["dc_output_power"], 0))
+            if ac_out + dc_out > 0:
+                total_out = ac_out + dc_out
+
         # Skip processing if data is clearly invalid (no real reading)
         if battery_pct < 0 and voltage == 0 and total_in == 0 and total_out == 0:
             log.debug("Skipping invalid/empty data for %s (battery=%d%%, voltage=%.1fV)",
                       device_key, battery_pct, voltage)
             return
 
-        # Track data source
-        self.data_sources[device_key] = source
+        # Track data source — prefer local transports over cloud
+        # If we already have a local source, don't let cloud overwrite it
+        # (cloud MQTT fires asynchronously and can arrive after local TCP)
+        existing_source = self.data_sources.get(device_key)
+        LOCAL_SOURCES = ("LOCAL TCP", "BLE")
+        if existing_source in LOCAL_SOURCES and source not in LOCAL_SOURCES:
+            # Keep the local source designation, but still process the data
+            pass
+        else:
+            self.data_sources[device_key] = source
 
         log.info("🔋 %s%% | %.1fV | %d°C | ⚡ In:%dW Out:%dW | ⏱ %dh%dm [via %s]",
                  battery_pct, voltage, temp, total_in, total_out,
@@ -1174,10 +1200,10 @@ class PecronMonitor:
                         log.warning("BLE read failed for %s: %s", dk, e)
 
             # Try TCP/WiFi local transport
+            # Pecron devices close TCP after each response, so always reconnect
             lt = self.local_transports.get(dk)
             if lt:
-                if not lt.connected:
-                    self._connect_local(dk)
+                self._connect_local(dk)
                 if lt.connected:
                     try:
                         kv = lt.read_status()
@@ -1336,6 +1362,20 @@ class PecronMonitor:
             packs = kv.get("charging_pack_data_jdb", [])
             source = self.data_sources.get(dk, "UNKNOWN")
 
+            # Compute total power with AC+DC fallback
+            total_in = int(_get_kv(kv, SENSOR_FIELDS["total_input_power"], 0))
+            total_out = int(_get_kv(kv, SENSOR_FIELDS["total_output_power"], 0))
+            if total_in == 0:
+                ac_in = int(_get_kv(kv, SENSOR_FIELDS["ac_input_power"], 0))
+                dc_in = int(_get_kv(kv, SENSOR_FIELDS["dc_input_power"], 0))
+                if ac_in + dc_in > 0:
+                    total_in = ac_in + dc_in
+            if total_out == 0:
+                ac_out = int(_get_kv(kv, SENSOR_FIELDS["ac_output_power"], 0))
+                dc_out = int(_get_kv(kv, SENSOR_FIELDS["dc_output_power"], 0))
+                if ac_out + dc_out > 0:
+                    total_out = ac_out + dc_out
+
             print(f"\n{'=' * 50}")
             print(f"Device: {dk}")
             print(f"Connection: {source}")
@@ -1344,8 +1384,8 @@ class PecronMonitor:
             print(f"Voltage:       {float(_get_kv(kv, SENSOR_FIELDS['voltage'], 0)):.1f}V")
             print(f"Temperature:   {_get_kv(kv, SENSOR_FIELDS['temperature'], '?')}°C")
             print(f"Remaining:     {remain // 60}h {remain % 60}m")
-            print(f"Total Input:   {_get_kv(kv, SENSOR_FIELDS['total_input_power'], 0)}W")
-            print(f"Total Output:  {_get_kv(kv, SENSOR_FIELDS['total_output_power'], 0)}W")
+            print(f"Total Input:   {total_in}W")
+            print(f"Total Output:  {total_out}W")
             print(f"AC Output:     {_get_kv(kv, SENSOR_FIELDS['ac_output_power'], 0)}W @ {_get_kv(kv, SENSOR_FIELDS['ac_output_voltage'], '?')}V")
             print(f"DC Output:     {_get_kv(kv, SENSOR_FIELDS['dc_output_power'], 0)}W")
             print(f"AC Input:      {_get_kv(kv, SENSOR_FIELDS['ac_input_power'], 0)}W")

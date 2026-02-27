@@ -293,6 +293,7 @@ class LocalTransport:
         self._packet_id = 0
         self._lock = threading.Lock()
         self._connected = False
+        self._has_connected_once = False
 
     @property
     def connected(self) -> bool:
@@ -310,7 +311,10 @@ class LocalTransport:
             self._sock.settimeout(self.timeout)
             self._sock.connect((self.device_ip, self.device_port))
             self._connected = True
-            log.info("Local TCP connected to %s:%d", self.device_ip, self.device_port)
+            if not self._has_connected_once:
+                log.info("Local TCP connected to %s:%d", self.device_ip, self.device_port)
+            else:
+                log.debug("Local TCP reconnected to %s:%d", self.device_ip, self.device_port)
 
             # Step 1: Request random (IV)
             pkt = _ttlv_build_packet(0x7032, b"", self._next_pid())
@@ -369,7 +373,11 @@ class LocalTransport:
                 iv_bytes = iv_bytes[:16]
             self._iv = iv_bytes
             self._encrypted = True
-            log.info("Local TCP handshake complete — encryption active")
+            if not self._has_connected_once:
+                log.info("Local TCP handshake complete — encryption active")
+                self._has_connected_once = True
+            else:
+                log.debug("Local TCP handshake complete")
             return True
 
         except Exception as e:
@@ -467,7 +475,7 @@ class LocalTransport:
                 return kv
 
             except Exception as e:
-                log.error("Local read failed: %s", e)
+                log.debug("Local read ended: %s", e)
                 self._connected = False
                 return {}
 

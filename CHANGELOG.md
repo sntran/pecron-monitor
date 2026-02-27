@@ -4,6 +4,14 @@ All notable changes to pecron-monitor are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project uses [Semantic Versioning](https://semver.org/).
 
+## [0.5.3] — 2026-07-27
+
+### Fixed
+- **Local TCP connection drops every 60s** — Pecron devices close TCP after each response; monitor now reconnects cleanly on each poll cycle instead of logging errors (#6)
+- **`--status` shows "CLOUD MQTT" when local TCP data was received** — local transport source is now preserved when async MQTT data arrives afterward (#6)
+- **Local TCP shows 0W input power on some models (F3000LFP)** — total input/output power now computed from AC+DC components as fallback when top-level values are missing (#6)
+- Reduced log noise: repeated TCP connect/handshake messages on each poll cycle downgraded to DEBUG level
+
 ## [0.5.2] — 2026-02-27
 
 ### Fixed
