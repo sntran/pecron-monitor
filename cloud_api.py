@@ -1,0 +1,284 @@
+"""
+Cloud API functions for pecron-monitor.
+
+Handles authentication, device discovery, and REST API queries to the
+Pecron/Quectel cloud backend.
+"""
+
+import base64
+import hashlib
+import json
+import logging
+import secrets
+import string
+import urllib.parse
+import urllib.request
+
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad
+
+from constants import DEFAULT_CONTROLS
+
+log = logging.getLogger("pecron")
+
+
+# ===========================================================================
+# Authentication
+# ===========================================================================
+
+def _make_auth_params(email: str, password: str, region: dict) -> dict:
+    rand = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(16))
+    md5 = hashlib.md5(rand.encode()).hexdigest().upper()
+    aes_key = md5[8:24]
+    iv = aes_key[8:16] + aes_key[0:8]
+    cipher = AES.new(aes_key.encode(), AES.MODE_CBC, iv.encode())
+    enc_pwd = base64.b64encode(cipher.encrypt(pad(password.encode(), 16))).decode()
+    sig_input = email + enc_pwd + rand + region["user_domain_secret"]
+    signature = hashlib.sha256(sig_input.encode()).hexdigest()
+    return {
+        "email": email, "pwd": enc_pwd, "random": rand,
+        "userDomain": region["user_domain"], "signature": signature,
+    }
+
+
+def login(email: str, password: str, region: dict) -> dict:
+    params = _make_auth_params(email, password, region)
+    url = region["base_url"] + "/v2/enduser/enduserapi/emailPwdLogin"
+    data = urllib.parse.urlencode(params).encode()
+    req = urllib.request.Request(url, data=data)
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        body = json.loads(resp.read())
+    if body.get("code") != 200:
+        raise RuntimeError(f"Login failed: {body.get('msg', body)}")
+    token_data = body["data"]["accessToken"]
+    token = token_data["token"]
+    jwt_parts = token.split(".")
+    payload_b64 = jwt_parts[1] + "=" * (4 - len(jwt_parts[1]) % 4)
+    jwt_payload = json.loads(base64.b64decode(payload_b64))
+    return {
+        "token": token, "uid": jwt_payload["uid"],
+        "expires_at": jwt_payload.get("exp", 0),
+    }
+
+
+# ===========================================================================
+# Device discovery
+# ===========================================================================
+
+def get_product_catalog(token: str, region: dict) -> dict:
+    url = region["base_url"] + "/v2/enduser/enduserapi/getProductList?pageNum=1&pageSize=100"
+    req = urllib.request.Request(url)
+    req.add_header("Authorization", token)
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        body = json.loads(resp.read())
+    if body.get("code") != 200:
+        return {}
+    return {p["productKey"]: p["name"] for p in body.get("data", {}).get("list", [])}
+
+
+def get_user_devices(token: str, region: dict) -> list:
+    """Get devices already bound to the user's account (correct pk/dk pairs).
+
+    This is the most reliable way to discover devices — returns the exact
+    product_key and device_key that the cloud has on file, avoiding
+    mismatches that cause 'device is not bound' (4007) errors.
+    """
+    url = region["base_url"] + "/v2/binding/enduserapi/userDeviceList"
+    req = urllib.request.Request(url)
+    req.add_header("Authorization", token)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read())
+        if body.get("code") != 200:
+            log.debug("userDeviceList failed: %s", body.get("msg", body))
+            return []
+        data = body.get("data", {})
+        device_list = data.get("list", data) if isinstance(data, dict) else data
+        if not isinstance(device_list, list):
+            return []
+        devices = []
+        for d in device_list:
+            pk = d.get("productKey", "")
+            dk = d.get("deviceKey", "")
+            name = d.get("productName", d.get("deviceName", "Unknown"))
+            if pk and dk:
+                devices.append({"product_key": pk, "device_key": dk, "name": name})
+        return devices
+    except Exception as e:
+        log.debug("userDeviceList request failed: %s", e)
+        return []
+
+
+def get_product_tsl(token: str, region: dict, product_key: str) -> dict:
+    """Fetch TSL (data model) for a product — gives us data point IDs."""
+    url = region["base_url"] + f"/v2/binding/enduserapi/productTSL?pk={product_key}"
+    req = urllib.request.Request(url)
+    req.add_header("Authorization", token)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read())
+        if body.get("code") == 200:
+            tsl = body["data"]
+            controls = {}
+            for prop in tsl.get("properties", []):
+                dt = prop.get("dataType", {})
+                dtype = dt.get("type", dt) if isinstance(dt, dict) else str(dt)
+                access = prop.get("subType", prop.get("accessMode", "R"))
+                controls[prop["code"]] = {
+                    "id": prop["id"], "type": dtype,
+                    "desc": prop.get("name", prop["code"]),
+                    "access": access,
+                }
+            return controls
+    except Exception as e:
+        log.debug("TSL fetch failed: %s", e)
+    return {}
+
+
+def verify_device(token: str, region: dict, product_key: str, device_key: str) -> dict:
+    url = (region["base_url"] +
+           f"/v2/binding/enduserapi/getDeviceBindingInfo?pk={product_key}&dk={device_key}")
+    req = urllib.request.Request(url)
+    req.add_header("Authorization", token)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read())
+        if body.get("code") == 200:
+            return body.get("data", {})
+    except Exception:
+        pass
+    return {}
+
+
+def get_device_online_status(token: str, region: dict, product_key: str, device_key: str) -> dict:
+    """Check if device is online via cloud API."""
+    url = (region["base_url"] +
+           f"/v2/binding/enduserapi/getDeviceOnlineStatus?pk={product_key}&dk={device_key}")
+    req = urllib.request.Request(url)
+    req.add_header("Authorization", token)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read())
+        if body.get("code") == 200:
+            return body.get("data", {})
+    except Exception as e:
+        log.debug("Online status check failed: %s", e)
+    return {}
+
+
+def get_device_properties_rest(token: str, region: dict, pk: str, dk: str) -> dict:
+    """Read device properties via REST API (same method as ha-pecron HACS addon).
+
+    This is a reliable fallback when MQTT doesn't deliver data — it queries the
+    cloud API directly for current device state.
+
+    Returns a kv dict compatible with _process_data().
+    """
+    url = (region["base_url"] +
+           f"/v2/binding/enduserapi/getDeviceBusinessAttributes?pk={pk}&dk={dk}")
+    req = urllib.request.Request(url)
+    req.add_header("Authorization", token)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read())
+        if body.get("code") != 200:
+            log.debug("REST properties failed: %s", body.get("msg", body))
+            return {}
+
+        tsl_info = body.get("data", {}).get("customizeTslInfo", [])
+        if not tsl_info:
+            log.debug("REST properties returned empty TSL info")
+            return {}
+
+        # Convert TSL info array to kv dict matching MQTT format
+        kv = {}
+        for item in tsl_info:
+            code = item.get("code", "")
+            value = item.get("value")
+
+            if value is None:
+                continue
+
+            # Handle struct types (nested dicts)
+            if isinstance(value, dict):
+                kv[code] = value
+            elif isinstance(value, list):
+                kv[code] = value
+            elif isinstance(value, bool):
+                kv[code] = value
+            elif isinstance(value, (int, float)):
+                kv[code] = value
+            else:
+                try:
+                    kv[code] = int(value)
+                except (ValueError, TypeError):
+                    kv[code] = value
+
+        return kv
+    except Exception as e:
+        log.debug("REST properties request failed: %s", e)
+        return {}
+
+
+def resolve_devices(config: dict, token: str, region: dict) -> list:
+    catalog = get_product_catalog(token, region)
+    devices = []
+    configured = config.get("devices", [])
+    if not configured:
+        raise RuntimeError(
+            "No devices configured. Run --setup or add devices to config.yaml.\n"
+            "Find your device key in the Pecron app: Device → Settings → Device Info"
+        )
+    for d in configured:
+        pk = d.get("product_key", "")
+        dk = d.get("device_key", "")
+        name = catalog.get(pk, d.get("name", "Unknown"))
+        info = verify_device(token, region, pk, dk)
+        if info:
+            # Fetch TSL for this product
+            tsl = get_product_tsl(token, region, pk)
+            api_name = info.get("productName", name)
+            devices.append({
+                "product_key": pk, "device_key": dk,
+                "device_name": api_name,
+                "product_name": api_name,
+                "controls": tsl or DEFAULT_CONTROLS,
+            })
+            # Check online status
+            online_info = get_device_online_status(token, region, pk, dk)
+            online = online_info.get("online", online_info.get("value"))
+            if online:
+                log.info("  ✅ %s (pk=%s, dk=%s) — ONLINE", api_name, pk, dk)
+            else:
+                log.warning("  ⚠️  %s (pk=%s, dk=%s) — OFFLINE (device may not be connected to WiFi/internet)", api_name, pk, dk)
+                log.warning("     MQTT monitoring will not receive data until the device is online.")
+                log.warning("     Check: Is the device powered on? Is it connected to WiFi?")
+                log.warning("     In the Pecron app, go to the device — if it shows 'offline', the device can't reach the cloud.")
+            if api_name != name and name != "Unknown":
+                log.info("     ℹ️  API identifies this as '%s' (config says '%s')", api_name, name)
+        else:
+            # Try to find correct pk from userDeviceList
+            account_devs = get_user_devices(token, region)
+            corrected = None
+            for ad in account_devs:
+                if ad["device_key"].upper() == dk.upper():
+                    corrected = ad
+                    break
+            if corrected and corrected["product_key"] != pk:
+                log.warning("  ⚠️  %s (%s) — wrong product_key in config (pk=%s)", name, dk, pk)
+                log.info("     Auto-correcting to pk=%s (from account device list)", corrected["product_key"])
+                pk = corrected["product_key"]
+                tsl = get_product_tsl(token, region, pk)
+                devices.append({
+                    "product_key": pk, "device_key": dk,
+                    "device_name": corrected["name"],
+                    "product_name": corrected["name"],
+                    "controls": tsl or DEFAULT_CONTROLS,
+                })
+                log.info("  ✅ %s (pk=%s, dk=%s)", corrected["name"], pk, dk)
+            else:
+                log.warning("  ❌ %s (%s) — not found or not bound", name, dk)
+                log.warning("     Check that your device_key is correct (Pecron app → Device → ⚙️ → Device Info → Device Key/Code)")
+                log.warning("     It should be 12 hex characters (your device's MAC address)")
+    return devices
