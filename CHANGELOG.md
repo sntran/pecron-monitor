@@ -18,6 +18,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). This project use
 - **Optimistic switch mode** — AC/DC/UPS switches in HA now use `assumed_state: true` for faster UI feedback when toggling controls (contributed by @Technickly90)
 - Fallback sensor paths for switch states (`host_packet_data_jdb` nested variants)
 
+### Refactored
+- **Modularized codebase** — split 2185-line monolith into 8 focused modules: `helpers.py`, `constants.py`, `cloud_api.py`, `protocol.py`, `ha_bridge.py`, `monitor.py`, `lan_scan.py`, `setup_wizard.py`, with `pecron_monitor.py` as a thin CLI entry point. No logic changes.
+
 ### Contributors
 - @Technickly90 — Home Assistant field fixes, state caching design, optimistic switches (#11)
 
