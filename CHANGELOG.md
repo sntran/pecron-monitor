@@ -4,6 +4,23 @@ All notable changes to pecron-monitor are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project uses [Semantic Versioning](https://semver.org/).
 
+## [0.5.5] — 2026-03-02
+
+### Fixed
+- **Home Assistant bridge publishes 0W power on local TCP** — `publish_state()` now uses per-device state caching so partial payload shapes don't zero-out sensors. Computed power values from AC+DC subfields are correctly preserved across polling cycles (#10)
+- **Bogus remaining time sent to HA** — remaining time now formatted as human-readable `Xh XXm` / `Xd XXh XXm` and respects the unreliability check from local TCP
+- **Duplicate `_truthy()` function** — consolidated into a single robust implementation
+- **`packs` variable removed prematurely** — restored charging pack display in `--status` output
+
+### Added
+- **Host Battery vs SOC battery** — HA now exposes both `host_percent` (from `host_packet_data_jdb`) and `soc_percent` (overall battery) as separate sensors
+- **State caching for HA** — prevents sensor flapping when device alternates between host-packet and overall-packet payload shapes
+- **Optimistic switch mode** — AC/DC/UPS switches in HA now use `assumed_state: true` for faster UI feedback when toggling controls (contributed by @Technickly90)
+- Fallback sensor paths for switch states (`host_packet_data_jdb` nested variants)
+
+### Contributors
+- @Technickly90 — Home Assistant field fixes, state caching design, optimistic switches (#11)
+
 ## [0.5.4] — 2026-02-27
 
 ### Fixed
