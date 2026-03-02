@@ -4,6 +4,12 @@ All notable changes to pecron-monitor are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project uses [Semantic Versioning](https://semver.org/).
 
+## [0.5.6] — 2026-03-02
+
+### Fixed
+- **LAN scan crash during setup** — `lan_scan.py` imported `get_auth_key` from `cloud_api` instead of `local_transport`, causing `ImportError` when running network discovery in the setup wizard (#12)
+- **6 broken test mock targets** — `test_local_fix.py` patch decorators still pointed at `pecron_monitor.*` after the v0.5.5 modularization; updated to `monitor.*` (12/12 tests passing)
+
 ## [0.5.5] — 2026-03-02
 
 ### Fixed
